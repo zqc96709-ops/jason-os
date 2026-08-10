@@ -1,0 +1,31 @@
+import { entities, type Entity } from '../model'
+import type { SchemaDefinition } from './types'
+
+const required: Partial<Record<Entity, string[]>> = {
+  goals: ['title'], projects: ['title'], tasks: ['title'], timeLogs: ['title', 'startAt'], knowledge: ['title', 'content'], reviews: ['title'], insights: ['statement'], principles: ['statement'], mentalModels: ['name'], decisions: ['title'], events: ['title'], people: ['name'],
+}
+
+const allowed: Partial<Record<Entity, string[]>> = {
+  goals: ['createGoal', 'getGoal', 'searchGoals', 'updateGoal'],
+  projects: ['createProject', 'getProject', 'searchProjects', 'updateProject'],
+  tasks: ['createTask', 'getTask', 'searchTasks', 'updateTask', 'completeTask'],
+  timeLogs: ['startTimer', 'stopTimer', 'createTimeRecord', 'getTimeRecords'],
+  knowledge: ['createKnowledge', 'getKnowledge', 'searchKnowledge', 'updateKnowledge'],
+  reviews: ['createReview', 'getReview'], insights: ['createInsight'], principles: ['createPrinciple', 'searchPrinciples'],
+  mentalModels: ['createMentalModel', 'getMentalModel', 'searchMentalModels', 'updateMentalModel'],
+  decisions: ['createDecision', 'getDecision', 'searchDecisions', 'updateDecision'],
+}
+
+const relationMap = (entity: Entity) => Object.fromEntries(entities.find((item) => item.entity === entity)?.fields.filter((field) => field.relation).map((field) => [field.key, field.relation!]) || [])
+
+export const schemaRegistry: SchemaDefinition[] = entities.filter((config) => ['goals', 'projects', 'tasks', 'timeLogs', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels', 'decisions', 'events', 'people'].includes(config.entity)).map((config) => ({
+  entityName: config.entity,
+  description: config.description,
+  fields: config.fields.map((field) => field.key),
+  requiredFields: required[config.entity] || [],
+  relations: relationMap(config.entity),
+  allowedActions: allowed[config.entity] || [],
+  validationRules: ['仅写入 Schema Registry 声明的字段', '所有关系 ID 必须来自真实本地记录', '更新操作必须提供真实 entityId'],
+}))
+
+export const schemaFor = (entity: Entity) => schemaRegistry.find((item) => item.entityName === entity)

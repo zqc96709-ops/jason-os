@@ -1,0 +1,523 @@
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
+import type { FormEvent, ReactNode } from 'react'
+import './App.css'
+import { buildAgentContext } from './agent/contextEngine'
+import type { AgentAction } from './agent/types'
+import { buildRadarData, radarCategories, type RadarCategory, type RadarData, type RadarStory } from './aiNews'
+import { calendarDateKey, taskCalendarItems, type CalendarScope } from './calendar'
+import { taskMatrixQuadrants, taskQuadrant } from './taskMatrix'
+import { api, type AiProviderId, type BackupInfo, type ChatMessage, type HackStartConfig } from './api'
+import {
+  configFor, descriptionFor, durationMinutes, entities, isActive, isOverdue, isToday, linkedTo, localDateKey,
+  minutesToday, percent, priorityLabel, recordDate, statusLabel, timeline, titleFor,
+  type Entity, type EntityConfig, type FieldOption, type RecordData,
+} from './model'
+
+type View = 'command' | 'today' | 'tasks' | 'time' | 'projects' | 'knowledge' | 'reviews' | 'insights' | 'principles' | 'mentalModels' | 'decisions' | 'events' | 'people' | 'timeline' | 'aiNews' | 'settings'
+type EditState = { config: EntityConfig; record?: RecordData; initial?: Partial<RecordData> }
+type Notice = { text: string; tone?: 'success' | 'danger' }
+type TaskView = 'list' | 'kanban' | 'matrix' | 'calendar'
+type TimeRange = 'day' | 'week' | 'month'
+
+const today = () => localDateKey()
+const nowInput = () => new Date().toISOString().slice(0, 16)
+const formatDate = (value: unknown, withTime = false) => {
+  if (!value) return '—'
+  const date = new Date(Number(value) || String(value))
+  if (Number.isNaN(date.getTime())) return String(value)
+  return date.toLocaleString('zh-CN', withTime ? { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' } : { year: 'numeric', month: 'short', day: 'numeric' })
+}
+const formatMinutes = (minutes: number) => minutes < 60 ? `${Math.round(minutes)} 分钟` : `${Math.floor(minutes / 60)} 小时 ${Math.round(minutes % 60)} 分钟`
+const optionParts = (option: FieldOption) => typeof option === 'string' ? { value: option, label: option } : option
+const defaultStatus = (entity: Entity) => ({ tasks: 'todo', goals: 'active', projects: 'active', hypotheses: 'untested', experiments: 'planned', decisions: 'pending', inbox: 'unprocessed' } as Partial<Record<Entity, string>>)[entity] || 'active'
+const matchesRange = (record: RecordData, range: TimeRange) => {
+  const value = record.startAt || recordDate(record)
+  const date = new Date(Number(value) || String(value))
+  if (Number.isNaN(date.getTime())) return false
+  const now = new Date(); const start = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  if (range === 'day') return localDateKey(date) === localDateKey(now)
+  if (range === 'week') { const monday = new Date(start); monday.setDate(start.getDate() - ((start.getDay() + 6) % 7)); return date >= monday && date <= now }
+  return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth()
+}
+
+function App() {
+  const [records, setRecords] = useState<RecordData[]>([])
+  const [view, setView] = useState<View>('command')
+  const [editing, setEditing] = useState<EditState | null>(null)
+  const [detailId, setDetailId] = useState<string | null>(null)
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const [running, setRunning] = useState<RecordData | undefined>()
+  const [timerStart, setTimerStart] = useState<Partial<RecordData> | null>(null)
+  const [notice, setNotice] = useState<Notice | null>(null)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchEntities, setSearchEntities] = useState<Entity[]>([])
+  const [searchResults, setSearchResults] = useState<RecordData[]>([])
+  const [paletteOpen, setPaletteOpen] = useState(false)
+  const [aiOpen, setAiOpen] = useState(false)
+  const [aiConfig, setAiConfig] = useState<HackStartConfig | null>(null)
+  const [chat, setChat] = useState<ChatMessage[]>(() => { try { return JSON.parse(localStorage.getItem('jason-os-ai-chat') || '[]') } catch { return [] } })
+  const [aiDraft, setAiDraft] = useState('')
+  const [aiBusy, setAiBusy] = useState(false)
+  const [backups, setBackups] = useState<BackupInfo[]>([])
+  const noticeTimer = useRef<number | undefined>(undefined)
+
+  const refresh = async () => {
+    const all = await api.list('all')
+    setRecords(all)
+    setRunning(all.find((record) => record.entity === 'timeLogs' && record.isRunning === true))
+    setChat((current) => { if (current.length) return current; return all.filter((record) => record.entity === 'agentRuns' && record.status === 'completed').slice(0, 6).reverse().flatMap((run) => [{ role: 'user' as const, content: String(run.input || '') }, { role: 'assistant' as const, content: String(run.output || '') }]) })
+  }
+  const refreshSettings = async () => { setAiConfig(await api.getHackStartConfig()); setBackups(await api.backups()) }
+  useEffect(() => { api.initialize().then(async () => { await refresh(); await refreshSettings() }).catch((error) => showNotice(String(error), 'danger')) }, [])
+  useEffect(() => { localStorage.setItem('jason-os-ai-chat', JSON.stringify(chat.slice(-20))) }, [chat])
+  useEffect(() => {
+    const handler = (event: KeyboardEvent) => {
+      if (event.metaKey && event.key.toLowerCase() === 'k') { event.preventDefault(); setPaletteOpen(true) }
+      if (event.metaKey && event.shiftKey && event.code === 'Space') { event.preventDefault(); openCreate('inbox') }
+      if (event.key === 'Escape') { setPaletteOpen(false); setSearchOpen(false); setAiOpen(false); setDetailId(null) }
+    }
+    window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler)
+  }, [])
+  useEffect(() => {
+    if (!searchOpen) return
+    const timer = window.setTimeout(() => api.search(searchQuery, searchEntities).then(setSearchResults).catch((error) => showNotice(String(error), 'danger')), 120)
+    return () => window.clearTimeout(timer)
+  }, [searchQuery, searchEntities, searchOpen])
+
+  const showNotice = (text: string, tone: Notice['tone'] = 'success') => {
+    setNotice({ text, tone }); if (noticeTimer.current) window.clearTimeout(noticeTimer.current)
+    noticeTimer.current = window.setTimeout(() => setNotice(null), 4300)
+  }
+  const openCreate = (entity: Entity, initial?: Partial<RecordData>) => setEditing({ config: configFor(entity), initial })
+  const saveRecord = async (entity: Entity, data: Partial<RecordData>) => { const url = entity === 'inbox' ? String(data.content || '').match(/https?:\/\/[^\s]+/)?.[0] : undefined; if (url) { const captured = await api.captureLink(url); await refresh(); setEditing(null); showNotice(`${String(captured.platform || '链接')}内容已读取并保存到收集箱。`); return } await api.save(entity, data); await refresh(); setEditing(null); showNotice('已保存到本机。') }
+  const archiveRecord = async (id: string) => { await api.archive(id); await refresh(); setDetailId(null); if (selectedProjectId === id) setSelectedProjectId(null); showNotice('已归档，可在设置中恢复。') }
+  const restoreRecord = async (id: string) => { await api.restore(id); await refresh(); showNotice('记录已恢复。') }
+  const completeTask = async (task: RecordData) => { await api.save('tasks', { ...task, status: 'completed', completedAt: new Date().toISOString() }); await refresh(); showNotice('任务已完成。') }
+  const startTimer = (context?: Partial<RecordData>) => {
+    if (running) { showNotice('已有计时正在运行。', 'danger'); return }
+    setTimerStart(context || {})
+  }
+  const startTimerNow = async (context: Partial<RecordData>) => {
+    const log = await api.save('timeLogs', { ...context, startAt: new Date().toISOString(), isRunning: true, status: 'running', category: context.category || '专注' })
+    setRunning(log); setTimerStart(null); await refresh(); showNotice('计时已开始，工作上下文已自动关联。')
+  }
+  const stopTimer = async () => {
+    if (!running) return
+    const end = new Date(); const start = new Date(String(running.startAt)); const minutes = Math.max(1, Math.round((end.getTime() - start.getTime()) / 60000))
+    await api.stopTimer(running.id, end.toISOString(), minutes); await refresh(); showNotice(`已记录 ${formatMinutes(minutes)}。`)
+  }
+  const openRecord = (record: RecordData) => {
+    setSearchOpen(false); setPaletteOpen(false)
+    if (record.entity === 'projects') { setView('projects'); setSelectedProjectId(record.id); return }
+    setDetailId(record.id)
+  }
+  const agentContext = useMemo(() => buildAgentContext({ currentRoute: view, records, selectedProjectId, detailId, conversation: chat }), [view, records, selectedProjectId, detailId, chat])
+  const contextRecords = agentContext.selectedItems.map((id) => records.find((record) => record.id === id)).filter(Boolean) as RecordData[]
+  const confirmAiAction = async (actionId: string, baseChat = chat) => {
+    if (aiBusy) return
+    setAiBusy(true)
+    try {
+      const result = await api.confirmAiAction(actionId); const action = result.action
+      const record = result.record; const label = record ? configFor(record.entity).singular : configFor(action.entityType).singular
+      const updated = baseChat.map((message) => message.action?.actionId === actionId ? { ...message, action } : message)
+      setChat([...updated, { role: 'assistant', content: result.duplicate ? `相同的${label}操作已经完成，没有重复写入。` : `✓ 已保存${label}，Jason OS 已同步更新。` }])
+      await refresh(); showNotice(result.duplicate ? '已阻止重复创建。' : `${label}已由 AI Action 保存。`)
+    } catch (error) { setChat([...baseChat, { role: 'assistant', content: `执行失败：${String(error)}。没有写入成功。` }]); showNotice(String(error), 'danger') }
+    finally { setAiBusy(false) }
+  }
+  const cancelAiAction = async (actionId: string) => {
+    if (aiBusy) return
+    setAiBusy(true)
+    try { const result = await api.cancelAiAction(actionId); setChat((current) => current.map((message) => message.action?.actionId === actionId ? { ...message, content: '已取消本次操作，没有写入任何记录。', action: result.action } : message)); await refresh() }
+    catch (error) { showNotice(String(error), 'danger') }
+    finally { setAiBusy(false) }
+  }
+  const viewAiActionResult = (action: AgentAction) => {
+    const record = action.result && 'id' in action.result && 'entity' in action.result ? action.result as RecordData : undefined
+    if (!record) return
+    const targetView = ({ tasks: 'tasks', timeLogs: 'time', projects: 'projects', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisions', events: 'events', people: 'people' } as Partial<Record<Entity, View>>)[record.entity]
+    if (targetView) setView(targetView)
+    setAiOpen(false); openRecord(record)
+  }
+  const sendAi = async (preset?: string) => {
+    const question = (preset || aiDraft).trim(); if (!question || aiBusy) return
+    if (!aiConfig?.configured) { setView('settings'); setAiOpen(false); showNotice('请先配置任一 AI 服务商的 API Key。', 'danger'); return }
+    const nextChat = [...chat, { role: 'user' as const, content: question }]; setChat(nextChat); setAiDraft('')
+    const pending = [...chat].reverse().find((message) => message.action?.status === 'CONFIRM_REQUIRED')?.action
+    if (pending && /^(确认|确认保存|确认创建|执行|保存|开始执行)[。.!！]?$/.test(question)) { await confirmAiAction(pending.actionId, nextChat); return }
+    if (pending && /^(取消|取消操作|不要保存|不保存)[。.!！]?$/.test(question)) { await cancelAiAction(pending.actionId); return }
+    setAiBusy(true)
+    try { const result = await api.ask(question, { ...agentContext, recentConversation: nextChat.slice(-10).map(({ role, content }) => ({ role, content })) }, nextChat); setChat([...nextChat, { role: 'assistant', content: result.answer, action: result.action }]); await refresh() }
+    catch (error) { showNotice(`AI Agent 处理失败：${String(error)}`, 'danger') }
+    finally { setAiBusy(false) }
+  }
+  const saveAiProvider = async (provider: AiProviderId, apiKey: string, model: string) => {
+    try { setAiConfig(await api.configureAiProvider(provider, apiKey, model)); showNotice(`${provider === 'deepseek' ? 'DeepSeek' : provider === 'minimax' ? 'MiniMax Token Plan' : provider === 'volc-agent-plan' ? '火山引擎 Agent Plan' : 'HackStart'} 配置已保存，连通性测试通过。`) }
+    catch (error) { showNotice(`保存失败：${String(error)}`, 'danger') }
+  }
+  const createBackup = async () => { showNotice(`备份已创建：${await api.backup()}`); setBackups(await api.backups()) }
+  const restoreBackup = async (path: string) => {
+    if (!window.confirm('恢复备份会先自动创建当前数据库的安全备份，然后替换现有数据。继续吗？')) return
+    await api.restoreBackup(path); await refresh(); await refreshSettings(); showNotice('备份已恢复。')
+  }
+
+  const nav: { group: string; items: { view: View; label: string; icon: string }[] }[] = [
+    { group: '核心', items: [{ view: 'command', label: '指挥中心', icon: '⌂' }] },
+    { group: '聚焦', items: [{ view: 'today', label: '今天', icon: '◉' }, { view: 'tasks', label: '任务', icon: '□' }, { view: 'time', label: '时间', icon: '◷' }] },
+    { group: '工作', items: [{ view: 'projects', label: '项目', icon: '◈' }] },
+    { group: '记忆', items: [{ view: 'knowledge', label: '知识', icon: '⌘' }, { view: 'reviews', label: '复盘', icon: '◑' }, { view: 'insights', label: '洞见', icon: '✦' }, { view: 'principles', label: '原则', icon: '∴' }, { view: 'mentalModels', label: '思维模型', icon: '◇' }] },
+    { group: '决策', items: [{ view: 'decisions', label: '决策日志', icon: '◆' }] },
+    { group: '情境', items: [{ view: 'events', label: '事件', icon: '●' }, { view: 'people', label: '人物', icon: '♙' }, { view: 'timeline', label: '时间线', icon: '⌁' }] },
+  ]
+  const pageTitle = view === 'aiNews' ? 'AI News Radar' : nav.flatMap((group) => group.items).find((item) => item.view === view)?.label || (view === 'settings' ? '设置' : 'Jason OS')
+
+  return <div className="app-shell">
+    <GlobalHeader
+      query={searchQuery} onQuery={(value) => { setSearchQuery(value); setSearchOpen(true) }} onSearchFocus={() => setSearchOpen(true)}
+      onAiNews={() => setView('aiNews')} aiNewsActive={view === 'aiNews'} onAi={() => setAiOpen(true)} onPalette={() => setPaletteOpen(true)} aiConfigured={Boolean(aiConfig?.configured)}
+    />
+    <aside className="sidebar">
+      <button className="quick-capture" onClick={() => openCreate('inbox')}><span>＋</span><div><strong>快速收集</strong><small>⌘ ⇧ Space</small></div></button>
+      <nav>{nav.map((group) => <section key={group.group}><p>{group.group}</p>{group.items.map((item) => <button key={item.view} className={view === item.view ? 'active' : ''} onClick={() => { setView(item.view); if (item.view !== 'projects') setSelectedProjectId(null) }}><span>{item.icon}</span>{item.label}</button>)}</section>)}</nav>
+      <button className={`running-card ${running ? 'live' : ''}`} onClick={() => running ? stopTimer() : startTimer()}>{running ? <><span className="pulse" /><div><strong>{titleFor(running)}</strong><small>点击停止并记录时间</small></div></> : <><span>▶</span><div><strong>开始计时</strong><small>记录现实投入</small></div></>}</button>
+      <button className="sidebar-settings" onClick={() => setView('settings')}>⚙ 设置与数据</button>
+    </aside>
+    <main className="main-content">
+      <div className="page-heading"><div><p className="eyebrow">JASON OS · PERSONAL OPERATING SYSTEM</p><h1>{pageTitle}</h1></div>{!['command', 'aiNews'].includes(view) && <button className="button primary" onClick={() => openCreate(viewEntity(view))}>＋ 新建</button>}</div>
+      {view === 'command' && <CommandCenter records={records} onOpen={openRecord} onCreate={openCreate} onView={setView} onStartTimer={startTimer} onAi={(prompt) => { setAiDraft(prompt); setAiOpen(true) }} />}
+      {view === 'today' && <TodayView records={records} running={running} onOpen={openRecord} onEdit={(record) => setEditing({ config: configFor(record.entity), record })} onComplete={completeTask} onStartTimer={startTimer} onStopTimer={stopTimer} onCreate={openCreate} />}
+      {view === 'tasks' && <TasksView records={records} onOpen={openRecord} onEdit={(record) => setEditing({ config: configFor('tasks'), record })} onComplete={completeTask} onStartTimer={startTimer} onCreate={(initial) => openCreate('tasks', initial)} />}
+      {view === 'time' && <TimeView records={records} running={running} onStartTimer={startTimer} onStopTimer={stopTimer} onEdit={(record) => setEditing({ config: configFor('timeLogs'), record })} onCreate={() => openCreate('timeLogs', { startAt: nowInput() })} />}
+      {view === 'projects' && <ProjectsView records={records} selectedId={selectedProjectId} onSelect={setSelectedProjectId} onOpen={openRecord} onCreate={openCreate} onEdit={(record) => setEditing({ config: configFor(record.entity), record })} onStartTimer={startTimer} />}
+      {(['knowledge', 'reviews', 'insights', 'principles', 'mentalModels'] as View[]).includes(view) && <MemoryView entity={view as Entity} records={records} onOpen={openRecord} onCreate={openCreate} />}
+      {view === 'decisions' && <DecisionsView records={records} onOpen={openRecord} onCreate={() => openCreate('decisions', { date: today(), status: 'pending' })} />}
+      {(view === 'events' || view === 'people') && <ContextView entity={view} records={records} onOpen={openRecord} onCreate={openCreate} />}
+      {view === 'timeline' && <TimelineView records={records} onOpen={openRecord} />}
+      {view === 'aiNews' && <AiNewsRadarView />}
+      {view === 'settings' && <SettingsView config={aiConfig} onSaveAiProvider={saveAiProvider} onExport={async (format) => showNotice(`已导出：${await api.export(format)}`)} onBackup={createBackup} backups={backups} onRestoreBackup={restoreBackup} onRestoreRecord={restoreRecord} />}
+    </main>
+    {notice && <div className={`toast ${notice.tone === 'danger' ? 'danger' : ''}`}>{notice.text}</div>}
+    {searchOpen && <SearchOverlay query={searchQuery} results={searchResults} selectedEntities={searchEntities} onToggleEntity={(entity) => setSearchEntities((current) => current.includes(entity) ? current.filter((item) => item !== entity) : [...current, entity])} onOpen={openRecord} onClose={() => setSearchOpen(false)} />}
+    {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} actions={paletteActions({ setSearchOpen, setPaletteOpen, openCreate, startTimer, setAiOpen, setView })} />}
+    {aiOpen && <AiDrawer config={aiConfig} chat={chat} draft={aiDraft} busy={aiBusy} context={contextRecords} onDraft={setAiDraft} onSend={sendAi} onConfirmAction={confirmAiAction} onCancelAction={cancelAiAction} onViewAction={viewAiActionResult} onSelectModel={(provider, model) => saveAiProvider(provider, '', model)} onClose={() => setAiOpen(false)} onSettings={() => { setAiOpen(false); setView('settings') }} />}
+    {timerStart && <TimerStartModal initial={timerStart} records={records} onClose={() => setTimerStart(null)} onStart={startTimerNow} />}
+    {editing && <RecordModal config={editing.config} record={editing.record} initial={editing.initial} records={records} onClose={() => setEditing(null)} onSave={saveRecord} />}
+    {detailId && <RecordDrawer record={records.find((record) => record.id === detailId)} records={records} onClose={() => setDetailId(null)} onEdit={(record) => setEditing({ config: configFor(record.entity), record })} onArchive={archiveRecord} onCreate={openCreate} onOpen={openRecord} onStartTimer={startTimer} />}
+  </div>
+}
+
+const viewEntity = (view: View): Entity => ({ command: 'inbox', today: 'tasks', tasks: 'tasks', time: 'timeLogs', projects: 'projects', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisions', events: 'events', people: 'people', timeline: 'events', aiNews: 'inbox', settings: 'inbox' }[view] as Entity)
+
+function GlobalHeader({ query, onQuery, onSearchFocus, onAiNews, aiNewsActive, onAi, onPalette, aiConfigured }: { query: string; onQuery: (value: string) => void; onSearchFocus: () => void; onAiNews: () => void; aiNewsActive: boolean; onAi: () => void; onPalette: () => void; aiConfigured: boolean }) {
+  return <header className="global-header"><div className="global-brand"><span>J</span><div><strong>JASON OS</strong><small>个人操作系统</small></div></div><div className="global-search"><span>⌕</span><input value={query} onFocus={onSearchFocus} onChange={(event) => onQuery(event.target.value)} placeholder="搜索任何内容 / 询问 Jason OS..." /><kbd>⌘ K</kbd></div><div className="global-actions"><button className={`news-radar-shortcut ${aiNewsActive ? 'active' : ''}`} onClick={onAiNews}><span>✺</span>AI News Radar</button><button onClick={onAi}><span className={`ai-status ${aiConfigured ? 'connected' : ''}`} />AI 助理</button><button onClick={onPalette}><kbd>⌘ K</kbd></button></div></header>
+}
+
+function CommandCenter({ records, onOpen, onCreate, onView, onStartTimer, onAi }: { records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void; onView: (view: View) => void; onStartTimer: (context?: Partial<RecordData>) => void; onAi: (prompt: string) => void }) {
+  const goals = records.filter((record) => record.entity === 'goals' && isActive(record))
+  const northStar = [...goals].sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority))[0]
+  const tasks = records.filter((record) => record.entity === 'tasks' && isActive(record))
+  const top3 = [...tasks].sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || String(a.dueDate || '9999').localeCompare(String(b.dueDate || '9999'))).slice(0, 3)
+  const todayTasks = tasks.filter((record) => isToday(record.dueDate))
+  const projects = records.filter((record) => record.entity === 'projects' && isActive(record))
+  const blockers = projects.filter((record) => record.status === 'blocked' || record.health === 'blocked' || record.blockers)
+  const pendingDecisions = records.filter((record) => record.entity === 'decisions' && ['pending', 'monitoring'].includes(String(record.status)))
+  const results = records.filter((record) => record.entity === 'results').slice(0, 4)
+  const learning = records.filter((record) => ['reviews', 'insights', 'principles'].includes(record.entity)).slice(0, 4)
+  const todayLogs = records.filter((record) => record.entity === 'timeLogs' && isToday(record.startAt))
+  const allocated = allocation(todayLogs, records)
+  return <div className="command-center">
+    <section className="focus-banner"><div><p>{greeting()} · {new Date().toLocaleDateString('zh-CN', { timeZone: 'UTC', month: 'long', day: 'numeric', weekday: 'long' })}</p><h2>{northStar ? titleFor(northStar) : '先定义你现在最重要的方向。'}</h2><span>{northStar ? String(northStar.why || northStar.description || '这是当前 North Star。') : '目标不是任务清单，而是帮助今天的行动有方向。'}</span></div><div className="focus-actions">{northStar ? <ProgressRing value={percent(northStar.progress)} /> : <button className="button primary" onClick={() => onCreate('goals')}>创建 North Star</button>}<button className="button ghost" onClick={() => onStartTimer(top3[0])}>▶ 开始专注</button></div></section>
+    <div className="metric-strip"><Metric label="今日实际投入" value={formatMinutes(minutesToday(records))} hint={`${todayLogs.length} 条记录`} onClick={() => onView('time')} /><Metric label="今日任务" value={`${todayTasks.length}`} hint={`${tasks.filter(isOverdue).length} 项逾期`} onClick={() => onView('today')} /><Metric label="活跃项目" value={`${projects.length}`} hint={`${blockers.length} 个需关注`} onClick={() => onView('projects')} /><Metric label="待决策" value={`${pendingDecisions.length}`} hint="需要明确下一步" onClick={() => onView('decisions')} /></div>
+    <div className="center-grid">
+      <DashboardPanel title="Top 3" action="查看今天" onAction={() => onView('today')} className="span-5">{top3.length ? top3.map((task, index) => <TaskRow key={task.id} task={task} records={records} number={index + 1} onOpen={onOpen} onTimer={onStartTimer} />) : <GuidedEmpty icon="□" title="选择今天最重要的三件事" text="Top 3 限制注意力，让任务服务于方向。" action="创建任务" onAction={() => onCreate('tasks', { dueDate: today(), priority: 'high' })} />}</DashboardPanel>
+      <DashboardPanel title="活跃项目" action="全部项目" onAction={() => onView('projects')} className="span-7">{projects.length ? <div className="project-compact-grid">{projects.slice(0, 4).map((project) => <ProjectCompact key={project.id} project={project} records={records} onOpen={onOpen} />)}</div> : <GuidedEmpty icon="◈" title="项目把目标变成结果" text="从一个有明确下一步行动的项目开始。" action="创建项目" onAction={() => onCreate('projects')} />}</DashboardPanel>
+      <DashboardPanel title="时间分配" action="查看时间" onAction={() => onView('time')} className="span-5"><AllocationList items={allocated} empty="今天还没有时间记录。开始计时后，这里会显示时间真正花在哪里。" /></DashboardPanel>
+      <DashboardPanel title="需要关注" action="查看决策" onAction={() => onView('decisions')} className="span-7"><AttentionList blockers={blockers} overdue={tasks.filter(isOverdue)} decisions={pendingDecisions} onOpen={onOpen} /></DashboardPanel>
+      <DashboardPanel title="最近结果" action="记录结果" onAction={() => onCreate('results')} className="span-4">{results.length ? results.map((record) => <CompactRecord key={record.id} record={record} onOpen={onOpen} />) : <GuidedEmpty icon="✓" title="结果是现实层的核心资产" text="完成工作后记录预期与实际，而不是只勾选任务。" action="记录结果" onAction={() => onCreate('results')} />}</DashboardPanel>
+      <DashboardPanel title="最近学习" action="开始复盘" onAction={() => onCreate('reviews')} className="span-4">{learning.length ? learning.map((record) => <CompactRecord key={record.id} record={record} onOpen={onOpen} />) : <GuidedEmpty icon="◑" title="把经历变成可复用经验" text="从一次结果或重要决策开始复盘。" action="创建复盘" onAction={() => onCreate('reviews')} />}</DashboardPanel>
+      <DashboardPanel title="AI 洞察" action="打开 AI" onAction={() => onAi('根据我最近的目标、任务、时间、结果和决策，指出最值得关注的一个模式。')} className="span-4"><div className="ai-insight"><span>AI</span><p>让 AI 基于你的真实记录发现风险、重复模式和下一步，而不是凭空聊天。</p><button onClick={() => onAi('根据我最近的目标、任务、时间、结果和决策，指出最值得关注的一个模式。')}>分析最近上下文 →</button></div></DashboardPanel>
+    </div>
+    <button className="capture-inline" onClick={() => onCreate('inbox')}><span>＋</span><div><strong>快速收集一个想法、问题或发现</strong><small>先记录，再分类。内容只保存在本机。</small></div><kbd>⌘ ⇧ Space</kbd></button>
+  </div>
+}
+
+function TodayView({ records, running, onOpen, onEdit, onComplete, onStartTimer, onStopTimer, onCreate }: { records: RecordData[]; running?: RecordData; onOpen: (record: RecordData) => void; onEdit: (record: RecordData) => void; onComplete: (record: RecordData) => void; onStartTimer: (record?: Partial<RecordData>) => void; onStopTimer: () => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void }) {
+  const tasks = records.filter((record) => record.entity === 'tasks' && isActive(record))
+  const top = [...tasks].sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority)).slice(0, 3)
+  const due = tasks.filter((record) => isToday(record.dueDate))
+  const logs = records.filter((record) => record.entity === 'timeLogs' && isToday(record.startAt)).sort((a, b) => String(a.startAt).localeCompare(String(b.startAt)))
+  const planned = due.reduce((sum, task) => sum + Number(task.estimateMinutes || 0), 0); const actual = logs.reduce((sum, log) => sum + durationMinutes(log), 0)
+  return <div className="focus-page"><section className="today-hero"><div><p>今天的焦点</p><h2>{running ? titleFor(running) : top[0] ? titleFor(top[0]) : '选择下一项真正重要的行动'}</h2><span>{running ? `开始于 ${formatDate(running.startAt, true)}` : 'Focus 不是新实体，而是把现有工作组织成可执行视图。'}</span></div>{running ? <button className="button danger" onClick={onStopTimer}>■ 停止计时</button> : <button className="button primary" onClick={() => onStartTimer(top[0])}>▶ 开始当前任务</button>}</section>
+    <div className="two-column"><section className="work-panel"><PanelHeader title="今日 Top 3" action="添加" onAction={() => onCreate('tasks', { dueDate: today(), priority: 'high' })} />{top.length ? top.map((task, index) => <ActionTask key={task.id} task={task} records={records} index={index + 1} onOpen={onOpen} onEdit={onEdit} onComplete={onComplete} onTimer={onStartTimer} />) : <GuidedEmpty icon="◉" title="还没有今日重点" text="添加一项最能推动目标的行动，而不是填满清单。" action="添加 Top 3" onAction={() => onCreate('tasks', { dueDate: today(), priority: 'high' })} />}</section>
+    <section className="work-panel"><PanelHeader title="计划 vs 实际" /><div className="compare"><CompareBar label="计划" value={planned} max={Math.max(planned, actual, 60)} /><CompareBar label="实际" value={actual} max={Math.max(planned, actual, 60)} /></div><div className="time-summary"><strong>{formatMinutes(actual)}</strong><span>今天已记录 · {logs.length} 段</span></div>{logs.slice(-3).reverse().map((log) => <CompactRecord key={log.id} record={log} onOpen={() => onEdit(log)} />)}</section></div>
+    <section className="work-panel"><PanelHeader title="今天的任务" action="新建任务" onAction={() => onCreate('tasks', { dueDate: today() })} />{due.length ? <div className="task-table">{due.map((task) => <ActionTask key={task.id} task={task} records={records} onOpen={onOpen} onEdit={onEdit} onComplete={onComplete} onTimer={onStartTimer} />)}</div> : <GuidedEmpty icon="□" title="今天没有到期任务" text="这不代表你无事可做。选择一个项目的下一步，明确安排到今天。" action="安排任务" onAction={() => onCreate('tasks', { dueDate: today() })} />}</section>
+  </div>
+}
+
+function TasksView({ records, onOpen, onEdit, onComplete, onStartTimer, onCreate }: { records: RecordData[]; onOpen: (record: RecordData) => void; onEdit: (record: RecordData) => void; onComplete: (record: RecordData) => void; onStartTimer: (record: RecordData) => void; onCreate: (initial?: Partial<RecordData>) => void }) {
+  const [mode, setMode] = useState<TaskView>('list'); const [filter, setFilter] = useState<'all' | 'today' | 'upcoming' | 'overdue'>('all')
+  const tasks = records.filter((record) => record.entity === 'tasks' && isActive(record)).filter((task) => filter === 'all' || filter === 'today' && isToday(task.dueDate) || filter === 'upcoming' && Boolean(task.dueDate) && String(task.dueDate) > today() || filter === 'overdue' && isOverdue(task))
+  return <div className={`tasks-page ${mode === 'calendar' ? 'calendar-v2-mode' : ''}`}>{mode !== 'calendar' && <div className="toolbar"><div className="segmented">{(['all', 'today', 'upcoming', 'overdue'] as const).map((item) => <button key={item} className={filter === item ? 'active' : ''} onClick={() => setFilter(item)}>{{ all: '全部', today: '今天', upcoming: '即将到期', overdue: '已逾期' }[item]}</button>)}</div><div className="segmented">{(['list', 'kanban', 'matrix', 'calendar'] as const).map((item) => <button key={item} className={mode === item ? 'active' : ''} onClick={() => setMode(item)}>{{ list: '列表', kanban: '看板', matrix: '四象限', calendar: '日历' }[item]}</button>)}</div></div>}
+    {mode === 'list' && <section className="work-panel">{tasks.length ? tasks.map((task) => <ActionTask key={task.id} task={task} records={records} onOpen={onOpen} onEdit={onEdit} onComplete={onComplete} onTimer={onStartTimer} />) : <GuidedEmpty icon="□" title="这个视图里没有任务" text="任务应该代表可执行的下一步，并关联项目或目标。" action="创建任务" onAction={() => onCreate()} />}</section>}
+    {mode === 'kanban' && <div className="kanban">{(['inbox', 'todo', 'in_progress', 'waiting'] as const).map((status) => <section key={status}><header><h3>{statusLabel(status)}</h3><span>{tasks.filter((task) => task.status === status).length}</span></header>{tasks.filter((task) => task.status === status).map((task) => <article key={task.id} onClick={() => onOpen(task)}><strong>{titleFor(task)}</strong><small>{relationName(task.projectId, records) || '未分配项目'}</small><footer><span className={`priority ${task.priority || 'medium'}`}>{priorityLabel(task.priority)}</span><span>{formatDate(task.dueDate)}</span></footer></article>)}</section>)}</div>}
+    {mode === 'matrix' && <TaskMatrixBoard tasks={tasks} records={records} onOpen={onOpen} onCreate={onCreate} />}
+    {mode === 'calendar' && <TaskCalendarBoard tasks={tasks} records={records} onOpen={onOpen} onCreate={onCreate} onTaskView={setMode} />}
+  </div>
+}
+
+function TaskMatrixBoard({ tasks, records, onOpen, onCreate }: { tasks: RecordData[]; records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: (initial?: Partial<RecordData>) => void }) {
+  return <div className="task-matrix">{taskMatrixQuadrants.map((quadrant, index) => {
+    const quadrantTasks = tasks.filter((task) => taskQuadrant(task) === quadrant.id)
+    return <section className={`task-quadrant quadrant-${quadrant.id}`} key={quadrant.id}><header><div><span>Q{index + 1}</span><h3>{quadrant.title}</h3><p>{quadrant.action}</p></div><strong>{quadrantTasks.length}</strong></header><div className="quadrant-task-list">{quadrantTasks.map((task) => <button className="matrix-task-card" key={task.id} onClick={() => onOpen(task)}><strong>{titleFor(task)}</strong><small>{[relationName(task.projectId, records), relationName(task.goalId, records)].filter(Boolean).join(' · ') || '未关联项目或目标'}</small><footer><span className={`priority ${task.priority || 'medium'}`}>{priorityLabel(task.priority)}</span><time>{task.dueAt ? formatDate(task.dueAt, true) : task.dueDate ? formatDate(task.dueDate) : '未设截止日期'}</time></footer></button>)}</div><button className="matrix-create" onClick={() => onCreate({ importance: quadrant.importance, urgency: quadrant.urgency, status: 'todo' })}>＋ 添加到「{quadrant.action}」</button></section>
+  })}</div>
+}
+
+function TaskCalendarBoard({ tasks, records: _records, onOpen, onCreate, onTaskView }: { tasks: RecordData[]; records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: (initial?: Partial<RecordData>) => void; onTaskView: (view: TaskView) => void }) {
+  const [anchor, setAnchor] = useState(() => new Date())
+  const [scope, setScope] = useState<CalendarScope>('week')
+  const dateKey = calendarDateKey
+  const addDays = (date: Date, days: number) => { const next = new Date(date); next.setDate(next.getDate() + days); return next }
+  const weekStart = new Date(anchor); weekStart.setDate(anchor.getDate() - ((anchor.getDay() + 6) % 7)); weekStart.setHours(0, 0, 0, 0)
+  const visibleDays = scope === 'day' ? [anchor] : Array.from({ length: 7 }, (_, index) => addDays(weekStart, index))
+  const monthStart = new Date(anchor.getFullYear(), anchor.getMonth(), 1); const monthGridStart = addDays(monthStart, -((monthStart.getDay() + 6) % 7)); const monthDays = Array.from({ length: 42 }, (_, index) => addDays(monthGridStart, index))
+  const calendarItems = taskCalendarItems(tasks)
+  const taskMap = Object.fromEntries(Object.entries(groupBy(calendarItems.filter((item) => item.allDay), (item) => item.startDateKey)).map(([key, items]) => [key, items.map((item) => item.record)]))
+  const move = (direction: number) => setAnchor(addDays(anchor, direction * (scope === 'day' ? 1 : scope === 'week' ? 7 : 30)))
+  const rangeLabel = scope === 'day' ? anchor.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' }) : scope === 'week' ? `${visibleDays[0].toLocaleDateString('zh-CN', { year: 'numeric', month: 'long', day: 'numeric' })} - ${visibleDays[6].toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })}` : anchor.toLocaleDateString('zh-CN', { year: 'numeric', month: 'long' })
+  const miniMonthDays = monthDays.slice(0, 42)
+  const scheduledCount = calendarItems.length; const unscheduledCount = tasks.filter((task) => !task.dueDate && !task.dueAt).length
+  const calendarHeader = <header className="task-calendar-v2-header"><div><span>JASON OS CALENDAR</span><strong>任务日历</strong><small>{scheduledCount} 项已安排 · {unscheduledCount} 项未安排</small></div><div className="task-calendar-view-switch">{(['list','kanban','matrix','calendar'] as const).map((item) => <button key={item} className={item === 'calendar' ? 'active' : ''} onClick={() => onTaskView(item)}>{{ list:'列表', kanban:'看板', matrix:'四象限', calendar:'日历' }[item]}</button>)}</div><button className="calendar-create-task" onClick={() => onCreate()}>＋ 新建任务</button></header>
+  if (scope === 'month') return <div className="task-calendar-v2">{calendarHeader}<div className="feishu-calendar"><MiniTaskMonth anchor={anchor} days={miniMonthDays} selected={dateKey(anchor)} taskMap={taskMap} onSelect={setAnchor} /><section className="calendar-main"><CalendarTopbar label={rangeLabel} scope={scope} onScope={setScope} onToday={() => setAnchor(new Date())} onMove={move} /><div className="calendar-month-grid">{['一','二','三','四','五','六','日'].map((day) => <b key={day}>{day}</b>)}{monthDays.map((day) => <button key={dateKey(day)} className={`${day.getMonth() !== anchor.getMonth() ? 'muted' : ''} ${dateKey(day) === today() ? 'today' : ''}`} onClick={() => setAnchor(day)}><span>{day.getDate()}</span>{(taskMap[dateKey(day)] || []).slice(0, 3).map((task) => <i key={task.id} onClick={(event) => { event.stopPropagation(); onOpen(task) }}>{titleFor(task)}</i>)}</button>)}</div></section></div></div>
+  const hours = Array.from({ length: 13 }, (_, index) => index + 7); const now = new Date(); const currentTop = ((now.getHours() + now.getMinutes() / 60) - 7) / 12 * 100
+  return <div className="task-calendar-v2">{calendarHeader}<div className="feishu-calendar"><MiniTaskMonth anchor={anchor} days={miniMonthDays} selected={dateKey(anchor)} taskMap={taskMap} onSelect={setAnchor} /><section className="calendar-main"><CalendarTopbar label={rangeLabel} scope={scope} onScope={setScope} onToday={() => setAnchor(new Date())} onMove={move} /><div className="calendar-week"><div className="calendar-timezone">GMT-7</div><div className="calendar-day-heads">{visibleDays.map((day) => <button key={dateKey(day)} className={dateKey(day) === today() ? 'today' : ''} onClick={() => { setAnchor(day); if (scope === 'week') return }}><small>{day.toLocaleDateString('zh-CN', { weekday: 'short' })}</small><strong>{day.getDate()}</strong></button>)}</div><div className="calendar-all-day-label">全天</div><div className="calendar-all-day">{visibleDays.map((day) => <div key={dateKey(day)}>{(taskMap[dateKey(day)] || []).map((task) => <button key={task.id} onClick={() => onOpen(task)}><span className={`priority ${task.priority || 'medium'}`} />{titleFor(task)}</button>)}</div>)}</div><div className="calendar-hours">{hours.map((hour) => <span key={hour}>{String(hour).padStart(2, '0')}:00</span>)}</div><div className="calendar-time-grid">{visibleDays.map((day) => <div key={dateKey(day)} className={dateKey(day) === today() ? 'today-column' : ''}>{calendarItems.filter((item) => !item.allDay && item.startDateKey === dateKey(day)).map((item) => { const top = ((item.start.getHours() + item.start.getMinutes() / 60) - 7) / 12 * 100; const height = Math.max(4, (item.end.getTime() - item.start.getTime()) / 3_600_000 / 12 * 100); return <button className="calendar-timed-task" key={item.id} style={{ top: `${Math.max(0, top)}%`, height: `${height}%` }} onClick={() => onOpen(item.record)}><strong>{titleFor(item.record)}</strong><small>{item.start.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}</small></button> })}</div>)}{visibleDays.some((day) => dateKey(day) === today()) && currentTop >= 0 && currentTop <= 100 && <div className="calendar-now" style={{ top: `${currentTop}%` }}><span>{now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}</span></div>}</div></div>{!tasks.some((task) => task.dueDate) && <button className="calendar-empty-action" onClick={() => onCreate({ dueDate: today() })}>＋ 创建带截止日期的任务</button>}</section></div></div>
+}
+
+function CalendarTopbar({ label, scope, onScope, onToday, onMove }: { label: string; scope: 'day' | 'week' | 'month'; onScope: (scope: 'day' | 'week' | 'month') => void; onToday: () => void; onMove: (direction: number) => void }) { return <header className="calendar-topbar"><button onClick={onToday}>今天</button><button onClick={() => onMove(-1)}>‹</button><button onClick={() => onMove(1)}>›</button><h3>{label}</h3><div>{(['day','week','month'] as const).map((item) => <button key={item} className={scope === item ? 'active' : ''} onClick={() => onScope(item)}>{{ day:'日', week:'周', month:'月' }[item]}</button>)}</div></header> }
+function MiniTaskMonth({ anchor, days, selected, taskMap, onSelect }: { anchor: Date; days: Date[]; selected: string; taskMap: Record<string, RecordData[]>; onSelect: (date: Date) => void }) { return <aside className="calendar-mini"><header><strong>{anchor.getFullYear()}年{anchor.getMonth()+1}月</strong><div><button onClick={() => onSelect(new Date(anchor.getFullYear(), anchor.getMonth()-1, 1))}>‹</button><button onClick={() => onSelect(new Date(anchor.getFullYear(), anchor.getMonth()+1, 1))}>›</button></div></header><div className="mini-weekdays">{['一','二','三','四','五','六','日'].map((day) => <span key={day}>{day}</span>)}</div><div className="mini-days">{days.map((day) => { const key=localDateKey(day); return <button key={key} className={`${day.getMonth() !== anchor.getMonth() ? 'muted' : ''} ${key === selected ? 'selected' : ''} ${key === today() ? 'today' : ''}`} onClick={() => onSelect(day)}>{day.getDate()}{taskMap[key]?.length ? <i /> : null}</button> })}</div><div className="calendar-sources"><strong>我的日历</strong><span><i className="blue" />任务截止日期</span><span><i className="green" />Jason OS 任务</span></div></aside> }
+
+function TimeView({ records, running, onStartTimer, onStopTimer, onEdit, onCreate }: { records: RecordData[]; running?: RecordData; onStartTimer: () => void; onStopTimer: () => void; onEdit: (record: RecordData) => void; onCreate: () => void }) {
+  const [range, setRange] = useState<TimeRange>('day'); const logs = records.filter((record) => record.entity === 'timeLogs' && matchesRange(record, range)).sort((a, b) => String(b.startAt).localeCompare(String(a.startAt)))
+  const total = logs.reduce((sum, log) => sum + durationMinutes(log), 0); const goalAligned = logs.filter((log) => log.goalId).reduce((sum, log) => sum + durationMinutes(log), 0); const projectTime = logs.filter((log) => log.projectId).reduce((sum, log) => sum + durationMinutes(log), 0); const unassigned = logs.filter((log) => !log.projectId && !log.goalId && !log.taskId).reduce((sum, log) => sum + durationMinutes(log), 0)
+  const planned = records.filter((record) => record.entity === 'tasks' && matchesRange({ ...record, startAt: record.dueDate } as RecordData, range)).reduce((sum, task) => sum + Number(task.estimateMinutes || 0), 0)
+  return <div className="time-page"><div className="toolbar"><div className="segmented">{(['day', 'week', 'month'] as const).map((item) => <button key={item} className={range === item ? 'active' : ''} onClick={() => setRange(item)}>{{ day: '今天', week: '本周', month: '本月' }[item]}</button>)}</div><div className="toolbar-actions"><button className="button ghost" onClick={onCreate}>＋ 手动记录</button>{running ? <button className="button danger" onClick={onStopTimer}>■ 停止计时</button> : <button className="button primary" onClick={onStartTimer}>▶ 开始计时</button>}</div></div><div className="metric-strip five"><Metric label="总时间" value={formatMinutes(total)} /><Metric label="目标一致" value={formatMinutes(goalAligned)} /><Metric label="项目时间" value={formatMinutes(projectTime)} /><Metric label="未分配" value={formatMinutes(unassigned)} /><Metric label="计划 / 实际" value={`${formatMinutes(planned)} / ${formatMinutes(total)}`} /></div><div className="two-column wide"><section className="work-panel"><PanelHeader title="现实时间轴" />{logs.length ? logs.map((log) => <TimeRow key={log.id} log={log} records={records} onEdit={onEdit} />) : <GuidedEmpty icon="◷" title="还没有现实时间记录" text="开始计时或手动添加一段工作，才能知道时间真正花在哪里。" action="手动记录" onAction={onCreate} />}</section><section className="work-panel"><PanelHeader title="时间分配" /><AllocationList items={allocation(logs, records)} empty="记录时间并关联项目、目标或类别后，这里会显示分配结构。" /><div className="compare"><CompareBar label="计划" value={planned} max={Math.max(planned, total, 60)} /><CompareBar label="实际" value={total} max={Math.max(planned, total, 60)} /></div></section></div></div>
+}
+
+function ProjectsView({ records, selectedId, onSelect, onOpen, onCreate, onEdit, onStartTimer }: { records: RecordData[]; selectedId: string | null; onSelect: (id: string | null) => void; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void; onEdit: (record: RecordData) => void; onStartTimer: (record: RecordData) => void }) {
+  const projects = records.filter((record) => record.entity === 'projects')
+  const selected = projects.find((project) => project.id === selectedId)
+  if (selected) return <ProjectWorkspace project={selected} records={records} onBack={() => onSelect(null)} onOpen={onOpen} onCreate={onCreate} onEdit={onEdit} onStartTimer={onStartTimer} />
+  return <div className="projects-page">{projects.length ? <div className="project-grid">{projects.map((project) => <article className="project-card" key={project.id} onClick={() => onSelect(project.id)}><header><span className={`health ${project.health || 'healthy'}`} /><span>{statusLabel(project.status)}</span><button onClick={(event) => { event.stopPropagation(); onEdit(project) }}>•••</button></header><h2>{titleFor(project)}</h2><p>{String(project.why || project.description || '明确项目为什么值得投入。')}</p><ProgressBar value={percent(project.progress)} /><div className="project-stats"><span><strong>{records.filter((record) => record.entity === 'tasks' && linkedTo(record, project.id)).length}</strong> 任务</span><span><strong>{formatMinutes(records.filter((record) => record.entity === 'timeLogs' && linkedTo(record, project.id)).reduce((sum, log) => sum + durationMinutes(log), 0))}</strong> 投入</span><span><strong>{records.filter((record) => record.entity === 'results' && linkedTo(record, project.id)).length}</strong> 结果</span></div><footer><span>{relationName(project.goalId, records) || '未关联目标'}</span><span>打开工作空间 →</span></footer></article>)}</div> : <GuidedEmpty icon="◈" title="项目是把目标变成结果的工作空间" text="一个好项目应该有明确的为什么、下一步、时间投入和结果。" action="创建第一个项目" onAction={() => onCreate('projects')} />}</div>
+}
+
+function ProjectWorkspace({ project, records, onBack, onOpen, onCreate, onEdit, onStartTimer }: { project: RecordData; records: RecordData[]; onBack: () => void; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void; onEdit: (record: RecordData) => void; onStartTimer: (record: RecordData) => void }) {
+  const [tab, setTab] = useState<'overview' | Entity | 'timeline'>('overview')
+  const map: { key: typeof tab; label: string; entity?: Entity }[] = [{ key: 'overview', label: '概览' }, { key: 'tasks', label: '任务', entity: 'tasks' }, { key: 'hypotheses', label: '假设', entity: 'hypotheses' }, { key: 'experiments', label: '实验', entity: 'experiments' }, { key: 'results', label: '结果', entity: 'results' }, { key: 'timeLogs', label: '时间', entity: 'timeLogs' }, { key: 'decisions', label: '决策', entity: 'decisions' }, { key: 'reviews', label: '复盘', entity: 'reviews' }, { key: 'timeline', label: '时间线' }]
+  const related = records.filter((record) => linkedTo(record, project.id)); const tasks = related.filter((record) => record.entity === 'tasks'); const done = tasks.filter((task) => task.status === 'completed').length; const time = related.filter((record) => record.entity === 'timeLogs').reduce((sum, log) => sum + durationMinutes(log), 0)
+  const current = map.find((item) => item.key === tab); const items = current?.entity ? related.filter((record) => record.entity === current.entity) : []
+  return <div className="project-workspace"><button className="back-link" onClick={onBack}>← 返回项目</button><section className="workspace-hero"><div><div className="meta-line"><span className={`health ${project.health || 'healthy'}`} />{statusLabel(project.status)} · {relationName(project.goalId, records) || '未关联目标'}</div><h2>{titleFor(project)}</h2><p>{String(project.why || project.description || '尚未填写项目为什么值得投入。')}</p></div><div><button className="button ghost" onClick={() => onEdit(project)}>编辑项目</button><button className="button primary" onClick={() => onStartTimer(project)}>▶ 为项目计时</button></div></section><nav className="workspace-tabs">{map.map((item) => <button key={item.key} className={tab === item.key ? 'active' : ''} onClick={() => setTab(item.key)}>{item.label}{item.entity && <span>{related.filter((record) => record.entity === item.entity).length}</span>}</button>)}</nav>
+    {tab === 'overview' && <div className="workspace-overview"><div className="metric-strip"><Metric label="项目进度" value={`${percent(project.progress)}%`} /><Metric label="任务进度" value={`${done}/${tasks.length}`} /><Metric label="实际投入" value={formatMinutes(time)} /><Metric label="结果数量" value={`${related.filter((record) => record.entity === 'results').length}`} /></div><div className="two-column"><section className="work-panel"><PanelHeader title="下一步行动" action="添加任务" onAction={() => onCreate('tasks', { projectId: project.id, goalId: project.goalId })} /><p className="lead-note">{String(project.nextAction || '项目还没有明确下一步。下一步应该是一个可执行任务，而不是模糊目标。')}</p>{tasks.filter(isActive).slice(0, 5).map((task) => <CompactRecord key={task.id} record={task} onOpen={onOpen} />)}</section><section className="work-panel"><PanelHeader title="阻塞与健康" /><div className={`health-callout ${project.health || 'healthy'}`}><strong>{project.blockers ? '当前阻塞' : '项目状态'}</strong><p>{String(project.blockers || '没有记录阻塞。持续比较时间投入、任务进度和真实结果。')}</p></div><PanelHeader title="最近活动" />{timeline([project, ...related]).slice(0, 5).map((record) => <CompactRecord key={record.id} record={record} onOpen={onOpen} />)}</section></div></div>}
+    {tab === 'timeline' && <TimelineList records={[project, ...related]} onOpen={onOpen} />}
+    {current?.entity && <section className="work-panel workspace-list"><PanelHeader title={`${titleFor(project)} · ${current.label}`} action={`新建${configFor(current.entity).singular}`} onAction={() => onCreate(current.entity!, { projectId: project.id, goalId: project.goalId })} />{items.length ? items.map((record) => <CompactRecord key={record.id} record={record} onOpen={onOpen} />) : <GuidedEmpty icon={configFor(current.entity).icon} title={`这里还没有${current.label}`} text={`${configFor(current.entity).description} 记录会自动成为项目时间线与 AI 上下文的一部分。`} action={`新建${configFor(current.entity).singular}`} onAction={() => onCreate(current.entity!, { projectId: project.id, goalId: project.goalId })} />}</section>}
+  </div>
+}
+
+function MemoryView({ entity, records, onOpen, onCreate }: { entity: Entity; records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void }) {
+  const config = configFor(entity); const items = records.filter((record) => record.entity === entity)
+  return <div className="memory-page"><section className="section-intro"><span>{config.icon}</span><div><h2>{config.label}</h2><p>{config.description} 这些内容应该与项目、复盘、决策和其他认知资产互相关联。</p></div></section>{items.length ? <div className="knowledge-list">{items.map((record) => <article key={record.id} onClick={() => onOpen(record)}><div><span className="entity-pill">{config.label}</span><h3>{titleFor(record)}</h3><p>{descriptionFor(record) || '打开查看完整内容与相关记录。'}</p></div><footer><span>{formatDate(record.updatedAt)}</span>{entity === 'mentalModels' && <ModelEffectiveness model={record} records={records} />}</footer></article>)}</div> : <GuidedEmpty icon={config.icon} title={`${config.label}不是普通文档收藏夹`} text={`${config.description} 从一次真实的结果或复盘开始创建。`} action={`创建${config.singular}`} onAction={() => onCreate(entity)} />}</div>
+}
+
+function DecisionsView({ records, onOpen, onCreate }: { records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: () => void }) {
+  const decisions = records.filter((record) => record.entity === 'decisions')
+  return <div className="decisions-page"><section className="decision-flow"><span>问题</span><b>→</b><span>方案</span><b>→</b><span>证据</span><b>→</b><span>预测</span><b>→</b><span>结果</span><b>→</b><span>复盘</span></section>{decisions.length ? <div className="decision-list">{decisions.map((decision) => <article key={decision.id} onClick={() => onOpen(decision)}><header><span className={`status-dot ${decision.status || 'pending'}`} />{statusLabel(decision.status)}<time>{formatDate(decision.date || decision.createdAt)}</time></header><h2>{titleFor(decision)}</h2><p>{String(decision.problem || '打开查看问题、选项、证据与预测。')}</p><div className="decision-prediction"><small>预测</small><span>{String(decision.prediction || '尚未记录预测')}</span></div><footer><span>置信度 {Number(decision.confidence || 0)}%</span><span>{relationName(decision.projectId, records) || '独立决策'}</span></footer></article>)}</div> : <GuidedEmpty icon="◆" title="决策日志用于校准判断，而不是记录待办" text="记录选择当时看到的问题、证据、预测和置信度，之后再与实际结果比较。" action="记录重要决策" onAction={onCreate} />}</div>
+}
+
+function ContextView({ entity, records, onOpen, onCreate }: { entity: 'events' | 'people'; records: RecordData[]; onOpen: (record: RecordData) => void; onCreate: (entity: Entity) => void }) {
+  const config = configFor(entity); const items = records.filter((record) => record.entity === entity)
+  return <div className="context-page"><section className="section-intro"><span>{config.icon}</span><div><h2>{config.label}</h2><p>{config.description}</p></div></section>{items.length ? <div className={entity === 'people' ? 'people-grid' : 'event-list'}>{items.map((record) => <article key={record.id} onClick={() => onOpen(record)}><span className="avatar">{entity === 'people' ? titleFor(record).slice(0, 1) : config.icon}</span><div><h3>{titleFor(record)}</h3><p>{entity === 'people' ? `${record.organization || '未填写组织'} · ${record.role || '未填写角色'}` : `${formatDate(record.startAt, true)} · ${record.location || '地点未定'}`}</p><small>{descriptionFor(record)}</small></div></article>)}</div> : <GuidedEmpty icon={config.icon} title={entity === 'people' ? '人物提供关系上下文，不是 CRM' : '事件连接现实世界与工作'} text={config.description} action={`创建${config.singular}`} onAction={() => onCreate(entity)} />}</div>
+}
+
+function TimelineView({ records, onOpen }: { records: RecordData[]; onOpen: (record: RecordData) => void }) {
+  const [range, setRange] = useState<TimeRange>('month'); const [entity, setEntity] = useState<Entity | 'all'>('all')
+  const items = timeline(records).filter((record) => (range === 'month' ? true : matchesRange({ ...record, startAt: recordDate(record) } as RecordData, range)) && (entity === 'all' || record.entity === entity))
+  return <div className="timeline-page"><div className="toolbar"><div className="segmented">{(['day', 'week', 'month'] as const).map((item) => <button key={item} className={range === item ? 'active' : ''} onClick={() => setRange(item)}>{{ day: '日', week: '周', month: '全部' }[item]}</button>)}</div><select value={entity} onChange={(event) => setEntity(event.target.value as Entity | 'all')}><option value="all">全部类型</option>{entities.filter((config) => ['goals', 'projects', 'tasks', 'timeLogs', 'events', 'results', 'reviews', 'insights', 'decisions'].includes(config.entity)).map((config) => <option value={config.entity} key={config.entity}>{config.label}</option>)}</select></div><TimelineList records={items} onOpen={onOpen} /></div>
+}
+
+
+function AiNewsRadarView() {
+  const [reload, setReload] = useState(0)
+  const [mode, setMode] = useState<'curated' | 'all'>('curated')
+  const [category, setCategory] = useState<RadarCategory>('all')
+  const [data, setData] = useState<RadarData | null>(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    const controller = new AbortController(); setError('')
+    Promise.all([
+      fetch(`https://news.learnprompt.pro/data/latest-24h.json?t=${Date.now()}`, { cache: 'no-store', signal: controller.signal }).then((response) => { if (!response.ok) throw new Error(`最新新闻加载失败（${response.status}）`); return response.json() }),
+      fetch(`https://news.learnprompt.pro/data/daily-brief.json?t=${Date.now()}`, { cache: 'no-store', signal: controller.signal }).then((response) => { if (!response.ok) throw new Error(`精选日报加载失败（${response.status}）`); return response.json() }),
+    ]).then(([latest, brief]) => setData(buildRadarData(latest, brief))).catch((reason) => { if (!controller.signal.aborted) setError(String(reason)) })
+    return () => controller.abort()
+  }, [reload])
+  const stories = (mode === 'curated' ? data?.curated : data?.all) || []
+  const filtered = category === 'all' ? stories : stories.filter((story) => story.category === category)
+  const topStories = filtered.slice(0, 3); const timelineStories = filtered.slice(3)
+  const generatedAt = data?.generatedAt ? new Date(data.generatedAt).toLocaleString('zh-CN', { month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '正在同步'
+  return <div className="ai-news-page"><section className="ai-news-toolbar"><div><span>INDEPENDENT ONLINE TOOL</span><h2>AI News Radar</h2><p>在线读取 LearnPrompt 新闻数据，仅保存在当前页面内存中，不进入 Jason OS 数据库、知识库、AI 上下文或导出。</p></div><div><a href="https://github.com/LearnPrompt/ai-news-radar" target="_blank" rel="noreferrer">GitHub</a><button onClick={() => setReload((value) => value + 1)}>↻ 刷新</button></div></section><section className="radar-panel"><header className="radar-summary"><div><span className="provider-light connected" /><strong>今日 AI 情报</strong><small>更新于 {generatedAt}</small></div><div><span><b>{data?.totalItems || '—'}</b> 条新闻</span><span><b>{data?.sourceCount || '—'}</b> 个来源</span><span><b>{data?.curated.length || '—'}</b> 条精选</span></div></header><div className="radar-controls"><nav>{radarCategories.map((item) => <button key={item.id} className={category === item.id ? 'active' : ''} onClick={() => setCategory(item.id)}>{item.label}</button>)}</nav><div className="radar-mode"><button className={mode === 'curated' ? 'active' : ''} onClick={() => setMode('curated')}>精选</button><button className={mode === 'all' ? 'active' : ''} onClick={() => setMode('all')}>全部</button></div></div><div className="radar-scroll">{error ? <div className="radar-state"><span>!</span><h3>新闻数据暂时无法连接</h3><p>{error}</p><button onClick={() => setReload((value) => value + 1)}>重新加载</button></div> : !data ? <div className="radar-state"><span className="radar-loader" /><h3>正在读取今日 AI 新闻</h3><p>只进行在线读取，不会把新闻内容保存到电脑。</p></div> : !filtered.length ? <div className="radar-state"><span>○</span><h3>当前分类暂无新闻</h3><p>切换分类或“全部”模式查看更多内容。</p></div> : <><section className="radar-top"><header><div><span>TOP STORIES</span><h3>今日重点</h3></div><small>{mode === 'curated' ? '编辑精选' : '最新情报'} · {filtered.length} 条</small></header><div>{topStories.map((story, index) => <RadarStoryCard story={story} rank={index + 1} featured key={story.id} />)}</div></section><section className="radar-feed"><header><div><span>CHRONOLOGICAL FEED</span><h3>时间线</h3></div><small>点击任一条目打开原始新闻详情</small></header><div>{timelineStories.map((story, index) => <RadarStoryCard story={story} rank={index + 4} key={story.id} />)}</div></section></>}</div></section></div>
+}
+
+function RadarStoryCard({ story, rank, featured = false }: { story: RadarStory; rank: number; featured?: boolean }) {
+  const publishedAt = story.publishedAt ? new Date(story.publishedAt).toLocaleString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '时间未知'
+  const categoryLabel = radarCategories.find((item) => item.id === story.category)?.label || '来源'
+  return <a className={`radar-story ${featured ? 'featured' : ''}`} href={story.url} target="_blank" rel="noreferrer" onClick={(event) => { event.preventDefault(); void api.openExternal(story.url) }}><div className="radar-story-meta"><span>#{rank}</span><span className={`radar-kind kind-${story.category}`}>{categoryLabel}</span>{story.score && <span>AI {story.score}分</span>}<time>{publishedAt}</time></div><h4>{story.title}</h4>{story.titleEn && !story.title.includes(story.titleEn) && <p className="radar-title-en">{story.titleEn}</p>}<p className="radar-why"><b>为什么值得关注</b>{story.reason}</p><footer><div>{story.sourceNames.slice(0, 3).map((source) => <span key={source}>{source}</span>)}</div><strong>{story.sourceCount} 个来源 ↗</strong></footer></a>
+}
+
+function SettingsView({ config, onSaveAiProvider, onExport, onBackup, backups, onRestoreBackup, onRestoreRecord }: { config: HackStartConfig | null; onSaveAiProvider: (provider: AiProviderId, key: string, model: string) => void; onExport: (format: 'json' | 'markdown' | 'csv') => void; onBackup: () => void; backups: BackupInfo[]; onRestoreBackup: (path: string) => void; onRestoreRecord: (id: string) => Promise<void> }) {
+  const [provider, setProvider] = useState<AiProviderId>(config?.provider || 'hackstart')
+  const selectedProvider = config?.providers.find((item) => item.id === provider)
+  const [key, setKey] = useState(''); const [model, setModel] = useState(selectedProvider?.model || 'gpt-5.5'); const [archived, setArchived] = useState<RecordData[]>([])
+  useEffect(() => { if (config?.provider) setProvider(config.provider) }, [config?.provider])
+  useEffect(() => { const selected = config?.providers.find((item) => item.id === provider); setKey(''); if (selected) setModel(selected.model || selected.models[0]?.id || '') }, [provider, config])
+  useEffect(() => { api.archived().then(setArchived) }, [])
+  return <div className="settings-page"><section className="settings-section"><header><div><h2>AI 服务商与模型</h2><p>每个服务商使用独立 API Key，并分别保存在 应用私有凭据文件（权限 0600）。</p></div><span className={`connection-badge ${selectedProvider?.configured ? 'connected' : ''}`}>{selectedProvider?.configured ? '已配置' : '未配置'}</span></header><div className="provider-tabs">{config?.providers.map((item) => <button key={item.id} className={provider === item.id ? 'active' : ''} onClick={() => setProvider(item.id)}><span className={`provider-light ${item.configured ? 'connected' : ''}`} /><strong>{item.label}</strong><small>{item.model}</small></button>)}</div><div className="model-catalog">{selectedProvider?.models.map((item) => <button key={item.id} className={model === item.id ? 'active' : ''} onClick={() => setModel(item.id)}><span>{model === item.id ? '●' : '○'}</span><div><strong>{item.label}</strong><small>{item.description}</small></div></button>)}</div><div className="settings-fields provider-settings"><label>{selectedProvider?.label || 'AI'} API Key<input type="password" autoComplete="off" placeholder={selectedProvider?.configured ? '已配置；留空保留当前 Key' : `粘贴 ${selectedProvider?.label || ''} API Key`} value={key} onChange={(event) => setKey(event.target.value)} /></label><label>当前模型<select value={model} onChange={(event) => setModel(event.target.value)}>{selectedProvider?.models.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}</select></label><button className="button primary" onClick={() => onSaveAiProvider(provider, key, model)}>保存、测试并启用</button></div><p className="provider-endpoint">API Endpoint：{selectedProvider?.baseUrl}{provider === 'minimax' ? ' · 中国大陆 Token Plan（Anthropic Messages）' : ''}</p></section><section className="settings-section"><header><div><h2>数据所有权</h2><p>核心数据保存在本机 SQLite，可完整导出、备份和恢复。</p></div></header><div className="settings-actions"><button onClick={() => onExport('json')}>导出 JSON</button><button onClick={() => onExport('markdown')}>导出 Markdown</button><button onClick={() => onExport('csv')}>导出 CSV</button><button className="primary" onClick={onBackup}>创建 SQLite 快照</button></div></section><section className="settings-section"><header><div><h2>本地备份</h2><p>恢复前会自动保存当前数据库，避免覆盖错误。</p></div></header>{backups.length ? <div className="backup-list">{backups.slice(0, 8).map((backup) => <div key={backup.path}><div><strong>{backup.name}</strong><small>{formatDate(backup.modified, true)} · {(backup.size / 1024).toFixed(1)} KB</small></div><button onClick={() => onRestoreBackup(backup.path)}>恢复</button></div>)}</div> : <GuidedEmpty icon="↺" title="还没有本地备份" text="创建 SQLite 快照后，可以随时恢复到这个状态。" action="创建第一个备份" onAction={onBackup} />}</section><section className="settings-section"><header><div><h2>归档</h2><p>重要记录不会直接永久删除。归档后可随时恢复。</p></div><span>{archived.length} 条</span></header>{archived.length ? <div className="archive-list">{archived.map((record) => <div key={record.id}><div><span>{configFor(record.entity).icon}</span><strong>{titleFor(record)}</strong><small>{configFor(record.entity).label}</small></div><button onClick={async () => { await onRestoreRecord(record.id); setArchived(await api.archived()) }}>恢复</button></div>)}</div> : <p className="muted">归档箱为空。</p>}</section></div>
+}
+
+function SearchOverlay({ query, results, selectedEntities, onToggleEntity, onOpen, onClose }: { query: string; results: RecordData[]; selectedEntities: Entity[]; onToggleEntity: (entity: Entity) => void; onOpen: (record: RecordData) => void; onClose: () => void }) {
+  const filters = entities.filter((config) => ['goals', 'projects', 'tasks', 'timeLogs', 'events', 'people', 'knowledge', 'hypotheses', 'experiments', 'results', 'reviews', 'insights', 'principles', 'mentalModels', 'decisions'].includes(config.entity))
+  return <div className="overlay-backdrop search-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="search-overlay"><header><div><p>全局搜索</p><h2>{query ? `“${query}”` : '最近更新'}</h2></div><button onClick={onClose}>×</button></header><div className="search-filters">{filters.map((config) => <button key={config.entity} className={selectedEntities.includes(config.entity) ? 'active' : ''} onClick={() => onToggleEntity(config.entity)}>{config.icon} {config.label}</button>)}</div><div className="search-results">{results.length ? results.map((record) => <button key={record.id} onClick={() => onOpen(record)}><span className="search-icon">{configFor(record.entity).icon}</span><div><div><strong>{titleFor(record)}</strong><span>{configFor(record.entity).label}</span></div><p>{descriptionFor(record) || '打开查看完整内容与关联。'}</p><small>{formatDate(record.updatedAt)} · {relationSummary(record)}</small></div></button>) : <GuidedEmpty icon="⌕" title={query ? '没有找到匹配记录' : '开始输入关键词'} text="可搜索标题、正文、标签、实体和关联字段。" action="关闭" onAction={onClose} />}</div></section></div>
+}
+
+function CommandPalette({ actions, onClose }: { actions: { label: string; hint: string; icon: string; run: () => void }[]; onClose: () => void }) {
+  const [query, setQuery] = useState(''); const filtered = actions.filter((action) => action.label.toLowerCase().includes(query.toLowerCase()))
+  return <div className="overlay-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="command-palette"><div className="palette-input"><span>⌘</span><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入命令..." /><kbd>Esc</kbd></div><div>{filtered.map((action) => <button key={action.label} onClick={action.run}><span>{action.icon}</span><strong>{action.label}</strong><small>{action.hint}</small></button>)}</div></section></div>
+}
+
+function AiDrawer({ config, chat, draft, busy, context, onDraft, onSend, onConfirmAction, onCancelAction, onViewAction, onSelectModel, onClose, onSettings }: { config: HackStartConfig | null; chat: ChatMessage[]; draft: string; busy: boolean; context: RecordData[]; onDraft: (value: string) => void; onSend: (preset?: string) => void; onConfirmAction: (actionId: string) => void; onCancelAction: (actionId: string) => void; onViewAction: (action: AgentAction) => void; onSelectModel: (provider: AiProviderId, model: string) => void; onClose: () => void; onSettings: () => void }) {
+  const [modelMenuOpen, setModelMenuOpen] = useState(false)
+  const currentProvider = config?.providers.find((provider) => provider.id === config.provider)
+  const currentModel = currentProvider?.models.find((model) => model.id === config?.model)
+  const availableModels = config?.providers.flatMap((provider) => provider.configured ? provider.models.map((model) => ({ provider, model })) : []) || []
+  const selectModel = (provider: AiProviderId, model: string) => { setModelMenuOpen(false); onSelectModel(provider, model) }
+  return <aside className="ai-drawer"><header><div><span>AI</span><div className="ai-drawer-title"><strong>Jason OS 首席助理</strong><small>{config?.configured ? `当前：${currentProvider?.label || config.providerLabel} · ${currentModel?.label || config.model}` : '尚未配置 API'}</small></div></div><button onClick={onClose}>×</button></header>{context.length > 0 && <div className="ai-context"><p>当前上下文</p>{context.map((record) => <span key={record.id}>{configFor(record.entity).icon} {titleFor(record)}</span>)}</div>}<div className="ai-chat">{chat.length ? chat.map((message, index) => <article className={message.role} key={`${message.role}-${index}`}><span>{message.role === 'assistant' ? 'AI' : '你'}</span><div className="ai-message-body"><p>{message.content}</p>{message.action && <AiActionCard action={message.action} busy={busy} onConfirm={onConfirmAction} onCancel={onCancelAction} onView={onViewAction} />}</div></article>) : <div className="ai-empty"><h2>基于你的记录，也能替你执行。</h2><p>AI 会理解当前页面、调用本地工具，并在确认后把内容真正写入 Jason OS。</p><button onClick={() => onSend('这个页面最值得关注的问题是什么？')}>这个页面最大的问题是什么？</button><button onClick={() => onSend('根据过去类似记录，我现在有什么风险？')}>我现在有什么风险？</button><button onClick={() => onSend('最近一个月时间主要花在哪里？')}>我的时间花在哪里？</button></div>}{busy && <article className="assistant loading"><span>AI</span><div className="ai-message-body"><p>正在理解意图、检索上下文并校验可执行操作…</p></div></article>}</div>{config?.configured ? <div className="ai-composer"><textarea value={draft} onChange={(event) => onDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSend() } }} placeholder="询问或让 Jason OS 执行操作..." /><div className="ai-composer-footer"><small>Enter 发送 · Shift Enter 换行</small><div className="ai-composer-model" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) setModelMenuOpen(false) }}><button className="ai-composer-model-trigger" aria-expanded={modelMenuOpen} onClick={() => setModelMenuOpen(!modelMenuOpen)}><span>模型</span><strong>{currentModel?.label || config.model}</strong><i>{modelMenuOpen ? '⌃' : '⌄'}</i></button>{modelMenuOpen && <div className="ai-composer-model-menu"><header><strong>选择模型</strong><small>{availableModels.length} 个可用</small></header>{availableModels.map(({ provider, model }) => { const current = provider.id === config.provider && model.id === config.model; return <button key={`${provider.id}:${model.id}`} className={current ? 'active' : ''} onClick={() => selectModel(provider.id, model.id)}><span>{current ? '✓' : '○'}</span><div><strong>{model.label}</strong><small>{provider.label}</small></div></button> })}</div>}</div><button className="ai-send" onClick={() => onSend()} disabled={busy || !draft.trim()}>↑</button></div></div> : <div className="ai-config-needed"><p>配置任一 AI 服务商的 API Key 后即可使用上下文感知分析和 Action。</p><button className="button primary" onClick={onSettings}>前往设置</button></div>}</aside>
+}
+
+function AiActionCard({ action, busy, onConfirm, onCancel, onView }: { action: AgentAction; busy: boolean; onConfirm: (actionId: string) => void; onCancel: (actionId: string) => void; onView: (action: AgentAction) => void }) {
+  const status = { PENDING: '等待处理', CONFIRM_REQUIRED: '等待确认', EXECUTING: '正在执行', SUCCESS: '执行成功', FAILED: '执行失败', CANCELLED: '已取消' }[action.status]
+  return <section className={`ai-action-card status-${action.status.toLowerCase()}`}><header><div><span>{action.status === 'SUCCESS' ? '✓' : action.status === 'FAILED' ? '!' : '→'}</span><div><strong>{action.previewTitle}</strong><small>{status} · {action.riskLevel === 'LOW_WRITE' ? '普通写入' : action.riskLevel === 'MEDIUM_WRITE' ? '重要写入' : action.riskLevel}</small></div></div></header>{action.previewFields?.length > 0 && <dl>{action.previewFields.map((field) => <div key={`${field.label}:${field.value}`}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>}{action.error && <p className="ai-action-error">{action.error}</p>}<footer>{action.status === 'CONFIRM_REQUIRED' && <><button onClick={() => onCancel(action.actionId)} disabled={busy}>取消</button><button className="confirm" onClick={() => onConfirm(action.actionId)} disabled={busy}>确认执行</button></>}{action.status === 'SUCCESS' && action.result && <button className="confirm" onClick={() => onView(action)}>查看{configFor(action.entityType).singular}</button>}</footer></section>
+}
+
+function TimerStartModal({ initial, records, onClose, onStart }: { initial: Partial<RecordData>; records: RecordData[]; onClose: () => void; onStart: (context: Partial<RecordData>) => Promise<void> }) {
+  const initialTaskId = initial.entity === 'tasks' ? String(initial.id || '') : String(initial.taskId || '')
+  const initialProjectId = initial.entity === 'projects' ? String(initial.id || '') : String(initial.projectId || '')
+  const initialGoalId = initial.entity === 'goals' ? String(initial.id || '') : String(initial.goalId || '')
+  const [taskId, setTaskId] = useState(initialTaskId)
+  const [projectId, setProjectId] = useState(initialProjectId)
+  const [goalId, setGoalId] = useState(initialGoalId)
+  const task = records.find((record) => record.id === taskId && record.entity === 'tasks')
+  const project = records.find((record) => record.id === (task?.projectId || projectId) && record.entity === 'projects')
+  const goal = records.find((record) => record.id === (task?.goalId || project?.goalId || goalId) && record.entity === 'goals')
+  const chooseTask = (id: string) => { setTaskId(id); if (!id) return; const selected = records.find((record) => record.id === id); setProjectId(String(selected?.projectId || '')); setGoalId(String(selected?.goalId || '')) }
+  const chooseProject = (id: string) => { setTaskId(''); setProjectId(id); const selected = records.find((record) => record.id === id); setGoalId(String(selected?.goalId || '')) }
+  const chooseGoal = (id: string) => { setTaskId(''); setProjectId(''); setGoalId(id) }
+  const title = task ? titleFor(task) : project ? titleFor(project) : goal ? titleFor(goal) : '专注工作'
+  return <div className="overlay-backdrop timer-backdrop"><section className="timer-start-modal"><header><div><p>开始计时</p><h2>正在做什么？</h2><span>选择最具体的对象，系统自动继承上级上下文。</span></div><button onClick={onClose}>×</button></header><div className="timer-context-fields"><label>任务<select value={taskId} onChange={(event) => chooseTask(event.target.value)}><option value="">不选择任务</option>{records.filter((record) => record.entity === 'tasks').map((record) => <option key={record.id} value={record.id}>{titleFor(record)}</option>)}</select></label><label>项目<select value={String(project?.id || projectId)} disabled={Boolean(taskId)} onChange={(event) => chooseProject(event.target.value)}><option value="">不选择项目</option>{records.filter((record) => record.entity === 'projects').map((record) => <option key={record.id} value={record.id}>{titleFor(record)}</option>)}</select></label><label>目标<select value={String(goal?.id || goalId)} disabled={Boolean(taskId || projectId)} onChange={(event) => chooseGoal(event.target.value)}><option value="">不关联</option>{records.filter((record) => record.entity === 'goals').map((record) => <option key={record.id} value={record.id}>{titleFor(record)}</option>)}</select></label></div><div className="timer-inheritance"><strong>{title}</strong><span>任务：{task ? titleFor(task) : '—'}</span><span>项目：{project ? titleFor(project) : '—'}</span><span>目标：{goal ? titleFor(goal) : '—'}</span></div><footer><button className="button ghost" onClick={onClose}>取消</button><button className="button primary" onClick={() => onStart({ title, taskId: task?.id, projectId: project?.id, goalId: goal?.id })}>▶ 开始计时</button></footer></section></div>
+}
+
+function RecordModal({ config, record, initial, records, onClose, onSave }: { config: EntityConfig; record?: RecordData; initial?: Partial<RecordData>; records: RecordData[]; onClose: () => void; onSave: (entity: Entity, data: Partial<RecordData>) => Promise<void> }) {
+  const [data, setData] = useState<Record<string, unknown>>({ status: defaultStatus(config.entity), ...(initial || {}), ...(record || {}) })
+  const [saving, setSaving] = useState(false)
+  const submit = async (event: FormEvent) => { event.preventDefault(); setSaving(true); try { await onSave(config.entity, data as Partial<RecordData>) } finally { setSaving(false) } }
+  const update = (key: string, value: unknown) => {
+    const next = { ...data, [key]: value }
+    if (key === 'taskId') { const task = records.find((item) => item.id === value && item.entity === 'tasks'); next.projectId = task?.projectId || ''; next.goalId = task?.goalId || '' }
+    if (key === 'projectId' && !next.taskId) { const project = records.find((item) => item.id === value && item.entity === 'projects'); next.goalId = project?.goalId || '' }
+    setData(next)
+  }
+  return <div className="overlay-backdrop form-backdrop"><form className="record-modal" onSubmit={submit}><header><div><p>{record ? '编辑记录' : '创建记录'} · {config.label}</p><h2>{record ? titleFor(record) : config.singular}</h2><span>{config.description}</span></div><button type="button" onClick={onClose}>×</button></header><div className="form-grid">{config.entity === 'inbox' && <div className="capture-hint full"><strong>链接智能采集</strong><p>粘贴公开链接后，Jason OS 会识别平台，读取标题、正文摘要、作者、封面和媒体元数据；无法解析时仍会保存原始链接和失败原因。</p></div>}{config.fields.length ? config.fields.map((field) => { const section = formSection(config.entity, field.key); const inherited = (field.key === 'goalId' && Boolean(data.projectId || data.taskId)) || (field.key === 'projectId' && Boolean(data.taskId)); return <Fragment key={field.key}>{section && <div className="form-section-label full">{section}</div>}<label className={field.multiline ? 'full' : ''}><span>{field.label}{inherited && <small>由上级自动关联</small>}</span>{field.relation ? <RelationInput field={field} value={data[field.key]} records={records} disabled={inherited} onChange={(value) => update(field.key, value)} /> : field.type === 'select' ? <select value={String(data[field.key] || '')} onChange={(event) => update(field.key, event.target.value)}><option value="">请选择…</option>{field.options?.map((item) => { const option = optionParts(item); return <option value={option.value} key={option.value}>{option.label}</option> })}</select> : field.multiline ? <textarea value={String(data[field.key] || '')} placeholder={field.placeholder} onChange={(event) => update(field.key, event.target.value)} /> : <input type={field.type || 'text'} value={String(data[field.key] || '')} placeholder={field.placeholder} onChange={(event) => update(field.key, field.type === 'number' ? Number(event.target.value) : event.target.value)} />}</label></Fragment> }) : <p className="muted">这是系统自动生成的审计记录。</p>}</div><footer><button type="button" className="button ghost" onClick={onClose}>取消</button><button className="button primary" type="submit" disabled={saving}>{saving ? (config.entity === 'inbox' ? '正在读取链接…' : '正在保存…') : (config.entity === 'inbox' ? '读取并保存' : '保存到本机')}</button></footer></form></div>
+}
+
+function formSection(entity: Entity, key: string) {
+  const starts: Partial<Record<Entity, Record<string, string>>> = {
+    projects: { title: '基本信息', goalId: '所属关系', status: '执行属性', startDate: '时间与阻塞' },
+    tasks: { title: '基本信息', projectId: '所属关系', status: '执行属性', tags: '辅助信息' },
+    timeLogs: { title: '基本信息', taskId: '工作上下文', category: '辅助信息' },
+    results: { title: '基本信息', taskId: '来源关系' }, reviews: { title: '基本信息', taskId: '复盘上下文' }, decisions: { title: '基本信息', taskId: '决策上下文', principleIds: '调用模型' },
+  }
+  return starts[entity]?.[key]
+}
+
+function RelationInput({ field, value, records, disabled = false, onChange }: { field: EntityConfig['fields'][number]; value: unknown; records: RecordData[]; disabled?: boolean; onChange: (value: unknown) => void }) {
+  const [added, setAdded] = useState<RecordData[]>([])
+  const [creating, setCreating] = useState(false)
+  const [name, setName] = useState('')
+  const relation = field.relation!
+  const relationConfig = configFor(relation)
+  const options = [...records.filter((record) => record.entity === relation), ...added.filter((record) => !records.some((item) => item.id === record.id))]
+  const current = Array.isArray(value) ? value.map(String) : String(value || '').split(',').filter(Boolean)
+  const quickCreate = async () => {
+    const title = name.trim(); if (!title) return
+    const created = await api.save(relation, { [relationConfig.titleKey]: title, status: defaultStatus(relation) })
+    setAdded((items) => [...items, created]); setName(''); setCreating(false); onChange(created.id)
+  }
+  if (field.multiple) return <select multiple disabled={disabled} value={current} onChange={(event) => onChange(Array.from(event.currentTarget.selectedOptions).map((option) => option.value))}>{options.map((record) => <option key={record.id} value={record.id}>{titleFor(record)}</option>)}</select>
+  return <div className="relation-input"><select disabled={disabled} value={String(value || '')} onChange={(event) => onChange(event.target.value)}><option value="">{options.length ? '不关联' : `暂无${relationConfig.singular}（可不关联）`}</option>{options.map((record) => <option key={record.id} value={record.id}>{titleFor(record)}</option>)}</select>{!disabled && <button type="button" className="quick-relation-button" onClick={() => setCreating(!creating)}>＋ 新建{relationConfig.singular}</button>}{creating && <div className="quick-relation-create"><input autoFocus value={name} placeholder={`${relationConfig.singular}名称`} onChange={(event) => setName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') { event.preventDefault(); quickCreate() } }} /><button type="button" onClick={quickCreate}>创建并选中</button></div>}</div>
+}
+
+function RecordDrawer({ record, records, onClose, onEdit, onArchive, onCreate, onOpen, onStartTimer }: { record?: RecordData; records: RecordData[]; onClose: () => void; onEdit: (record: RecordData) => void; onArchive: (id: string) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void; onOpen: (record: RecordData) => void; onStartTimer: (record: RecordData) => void }) {
+  const [related, setRelated] = useState<RecordData[]>([])
+  useEffect(() => { if (record) api.relations(record.id).then(setRelated) }, [record])
+  if (!record) return null
+  const config = configFor(record.entity); const fields = config.fields.filter((field) => record[field.key] !== undefined && record[field.key] !== '' && !field.relation)
+  const conversions = record.entity === 'reviews' ? ['insights', 'knowledge', 'principles', 'mentalModels', 'decisions', 'tasks'] as Entity[] : record.entity === 'results' ? ['reviews'] as Entity[] : record.entity === 'inbox' ? ['tasks', 'knowledge', 'insights', 'hypotheses', 'decisions', 'events', 'projects'] as Entity[] : []
+  const core = ['goals', 'projects', 'tasks'].includes(record.entity)
+  return <aside className="record-drawer"><header><div><span>{config.icon}</span><p>{config.label}</p></div><button onClick={onClose}>×</button></header><div className="record-drawer-body"><ContextBreadcrumb record={record} records={records} onOpen={onOpen} /><div className="record-title"><span className="entity-pill">{statusLabel(record.status)}</span><h2>{titleFor(record)}</h2><p>{descriptionFor(record)}</p>{core && <div className="detail-primary-actions"><button onClick={() => onStartTimer(record)}>▶ 开始计时</button>{record.entity === 'goals' && <button onClick={() => onCreate('projects', { goalId: record.id })}>＋ 创建项目</button>}{record.entity === 'projects' && <button onClick={() => onCreate('tasks', { projectId: record.id, goalId: record.goalId })}>＋ 创建任务</button>}{record.entity === 'tasks' && <button onClick={() => onCreate('results', { taskId: record.id, projectId: record.projectId, goalId: record.goalId, date: today() })}>＋ 记录结果</button>}</div>}</div>{record.entity === 'goals' && <GoalSnapshot goal={record} records={records} onOpen={onOpen} />}{core && <RelationshipOverview record={record} records={records} onOpen={onOpen} />}{fields.length > 0 && <section className="detail-fields">{fields.map((field) => <div key={field.key}><small>{field.label}</small><p>{field.type?.includes('date') ? formatDate(record[field.key], field.type === 'datetime-local') : String(record[field.key])}</p></div>)}</section>}{conversions.length > 0 && <section className="convert-actions"><h3>{record.entity === 'reviews' ? '从复盘提炼' : record.entity === 'inbox' ? '转换为' : '进入下一步'}</h3><div>{conversions.map((entity) => <button key={entity} onClick={() => onCreate(entity, conversionInitial(record, entity))}>＋ {configFor(entity).singular}</button>)}</div></section>}<section className="related-section"><h3>全部关联 <span>{related.length}</span></h3>{related.length ? related.map((item) => <button key={item.id} onClick={() => onOpen(item)}><span>{configFor(item.entity).icon}</span><div><strong>{titleFor(item)}</strong><small>{configFor(item.entity).label} · {String(item.relationType || '').replace('field:', '')}</small></div></button>) : <p>还没有关联记录。选择任务或项目后，上级上下文会自动建立。</p>}</section></div><footer><button className="button ghost" onClick={() => onArchive(record.id)}>归档</button><button className="button primary" onClick={() => onEdit(record)}>编辑</button></footer></aside>
+}
+
+function ContextBreadcrumb({ record, records, onOpen }: { record: RecordData; records: RecordData[]; onOpen: (record: RecordData) => void }) {
+  const goal = record.entity === 'goals' ? record : records.find((item) => item.id === record.goalId)
+  const project = record.entity === 'projects' ? record : records.find((item) => item.id === record.projectId)
+  const chain = [goal, project, record.entity === 'tasks' ? record : undefined].filter((item, index, items): item is RecordData => Boolean(item) && items.findIndex((candidate) => candidate?.id === item?.id) === index)
+  if (!chain.length) return null
+  return <nav className="record-breadcrumb">{chain.map((item, index) => <Fragment key={item.id}>{index > 0 && <span>/</span>}<button onClick={() => onOpen(item)}>{configFor(item.entity).singular} · {titleFor(item)}</button></Fragment>)}</nav>
+}
+
+function RelationshipOverview({ record, records, onOpen }: { record: RecordData; records: RecordData[]; onOpen: (record: RecordData) => void }) {
+  const key = record.entity === 'goals' ? 'goalId' : record.entity === 'projects' ? 'projectId' : 'taskId'
+  const related = records.filter((item) => item.id !== record.id && item[key] === record.id)
+  const order: Entity[] = record.entity === 'goals' ? ['projects', 'tasks', 'timeLogs', 'results', 'reviews', 'decisions', 'insights'] : record.entity === 'projects' ? ['tasks', 'timeLogs', 'results', 'reviews', 'decisions', 'knowledge', 'people', 'events'] : ['timeLogs', 'results', 'reviews', 'knowledge', 'decisions']
+  const minutes = related.filter((item) => item.entity === 'timeLogs').reduce((sum, item) => sum + durationMinutes(item), 0)
+  return <section className="relationship-overview"><header><h3>上下文与反向关联</h3><span>总投入 {formatMinutes(minutes)}</span></header>{order.map((entity) => { const items = related.filter((item) => item.entity === entity); if (!items.length) return null; return <div key={entity}><strong>{configFor(entity).label} · {items.length}</strong>{items.slice(0, 5).map((item) => <button key={item.id} onClick={() => onOpen(item)}>{titleFor(item)}<span>›</span></button>)}</div> })}</section>
+}
+
+function GoalSnapshot({ goal, records, onOpen }: { goal: RecordData; records: RecordData[]; onOpen: (record: RecordData) => void }) {
+  const related = records.filter((record) => linkedTo(record, goal.id)); const keyResults = related.filter((record) => record.entity === 'keyResults'); const projects = related.filter((record) => record.entity === 'projects')
+  return <section className="goal-snapshot"><ProgressBar value={percent(goal.progress)} /><div className="goal-numbers"><span><strong>{keyResults.length}</strong> 关键结果</span><span><strong>{projects.length}</strong> 项目</span><span><strong>{related.filter((record) => record.entity === 'results').length}</strong> 最近结果</span></div>{projects.slice(0, 3).map((project) => <CompactRecord key={project.id} record={project} onOpen={onOpen} />)}</section>
+}
+
+
+function DashboardPanel({ title, action, onAction, className = '', children }: { title: string; action?: string; onAction?: () => void; className?: string; children: ReactNode }) { return <section className={`dashboard-panel ${className}`}><PanelHeader title={title} action={action} onAction={onAction} />{children}</section> }
+function PanelHeader({ title, action, onAction }: { title: string; action?: string; onAction?: () => void }) { return <header className="panel-header"><h3>{title}</h3>{action && <button onClick={onAction}>{action} →</button>}</header> }
+function Metric({ label, value, hint, onClick }: { label: string; value: string; hint?: string; onClick?: () => void }) { return <button className="metric" onClick={onClick} disabled={!onClick}><span>{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</button> }
+function GuidedEmpty({ icon, title, text, action, onAction }: { icon: string; title: string; text: string; action?: string; onAction?: () => void }) { return <div className="guided-empty"><span>{icon}</span><div><h3>{title}</h3><p>{text}</p>{action && <button onClick={onAction}>{action} →</button>}</div></div> }
+function ProgressBar({ value }: { value: number }) { return <div className="progress"><span style={{ width: `${value}%` }} /><small>{Math.round(value)}%</small></div> }
+function ProgressRing({ value }: { value: number }) { return <div className="progress-ring" style={{ '--progress': `${value * 3.6}deg` } as React.CSSProperties}><span>{Math.round(value)}%</span></div> }
+function CompactRecord({ record, onOpen }: { record: RecordData; onOpen: (record: RecordData) => void }) { return <button className="compact-record" onClick={() => onOpen(record)}><span>{configFor(record.entity).icon}</span><div><strong>{titleFor(record)}</strong><small>{configFor(record.entity).label} · {formatDate(recordDate(record))}</small></div><b>›</b></button> }
+function TaskRow({ task, records, number, onOpen, onTimer }: { task: RecordData; records: RecordData[]; number: number; onOpen: (record: RecordData) => void; onTimer: (record: RecordData) => void }) { return <div className="task-row"><span className="task-number">0{number}</span><button onClick={() => onOpen(task)}><strong>{titleFor(task)}</strong><small>{relationName(task.projectId, records) || '未分配项目'} · {task.dueDate ? formatDate(task.dueDate) : '无截止日期'}</small></button><button className="timer-icon" onClick={() => onTimer(task)}>▶</button></div> }
+function ActionTask({ task, records, index, onOpen, onEdit, onComplete, onTimer }: { task: RecordData; records: RecordData[]; index?: number; onOpen: (record: RecordData) => void; onEdit: (record: RecordData) => void; onComplete: (record: RecordData) => void; onTimer: (record: RecordData) => void }) { return <div className={`action-task ${isOverdue(task) ? 'overdue' : ''}`}>{index && <span className="task-index">{index}</span>}<button className="check" onClick={() => onComplete(task)}>✓</button><button className="task-main" onClick={() => onOpen(task)}><strong>{titleFor(task)}</strong><small>{relationName(task.projectId, records) || '未分配项目'} · {task.dueDate ? formatDate(task.dueDate) : '未安排日期'} · 预计 {Number(task.estimateMinutes || 0)} 分钟</small></button><span className={`priority ${task.priority || 'medium'}`}>{priorityLabel(task.priority)}</span><button onClick={() => onTimer(task)}>▶</button><button onClick={() => onEdit(task)}>•••</button></div> }
+function ProjectCompact({ project, records, onOpen }: { project: RecordData; records: RecordData[]; onOpen: (record: RecordData) => void }) { const tasks = records.filter((record) => record.entity === 'tasks' && linkedTo(record, project.id)); const done = tasks.filter((task) => task.status === 'completed').length; return <button className="project-compact" onClick={() => onOpen(project)}><div><span className={`health ${project.health || 'healthy'}`} /><strong>{titleFor(project)}</strong></div><ProgressBar value={tasks.length ? done / tasks.length * 100 : percent(project.progress)} /><small>{done}/{tasks.length} 任务 · {statusLabel(project.status)}</small></button> }
+function TimeRow({ log, records, onEdit }: { log: RecordData; records: RecordData[]; onEdit: (record: RecordData) => void }) { return <button className="time-row" onClick={() => onEdit(log)}><time>{formatDate(log.startAt, true).split(' ')[1] || formatDate(log.startAt, true)}<span>—</span>{log.endAt ? formatDate(log.endAt, true).split(' ')[1] : '进行中'}</time><div><strong>{titleFor(log)}</strong><small>{relationName(log.projectId, records) || String(log.category || '未分配')} · {relationName(log.taskId, records)}</small></div><b>{formatMinutes(durationMinutes(log))}</b></button> }
+function CompareBar({ label, value, max }: { label: string; value: number; max: number }) { return <div className="compare-bar"><span>{label}</span><div><i style={{ width: `${Math.min(100, value / max * 100)}%` }} /></div><strong>{formatMinutes(value)}</strong></div> }
+function AllocationList({ items, empty }: { items: { label: string; minutes: number; percentage: number }[]; empty: string }) { return items.length ? <div className="allocation-list">{items.map((item) => <div key={item.label}><header><span>{item.label}</span><strong>{formatMinutes(item.minutes)}</strong></header><div><i style={{ width: `${item.percentage}%` }} /></div></div>)}</div> : <p className="empty-copy">{empty}</p> }
+function AttentionList({ blockers, overdue, decisions, onOpen }: { blockers: RecordData[]; overdue: RecordData[]; decisions: RecordData[]; onOpen: (record: RecordData) => void }) { const items = [...blockers.slice(0, 2), ...overdue.slice(0, 2), ...decisions.slice(0, 2)]; return items.length ? <div className="attention-list">{items.map((record) => <button key={record.id} onClick={() => onOpen(record)}><span className={record.entity === 'projects' ? 'warning' : record.entity === 'tasks' ? 'danger' : 'neutral'}>{configFor(record.entity).icon}</span><div><strong>{titleFor(record)}</strong><small>{record.entity === 'projects' ? String(record.blockers || '项目受阻') : record.entity === 'tasks' ? '任务已逾期' : statusLabel(record.status)}</small></div></button>)}</div> : <p className="empty-copy">当前没有明显阻塞、逾期任务或待决策事项。</p> }
+function TimelineList({ records, onOpen }: { records: RecordData[]; onOpen: (record: RecordData) => void }) { const items = timeline(records); return items.length ? <div className="timeline-list">{items.map((record) => <article key={record.id}><time>{formatDate(recordDate(record), true)}</time><span className="timeline-dot" /><button onClick={() => onOpen(record)}><small>{configFor(record.entity).label}</small><strong>{titleFor(record)}</strong><p>{descriptionFor(record)}</p></button></article>)}</div> : <GuidedEmpty icon="⌁" title="时间线会连接重要事实" text="任务、时间、事件、结果、复盘、洞见和决策会自动出现在这里。" /> }
+function ModelEffectiveness({ model, records }: { model: RecordData; records: RecordData[] }) { const usages = records.filter((record) => record.entity === 'mentalModelUsages' && linkedTo(record, model.id)); const effective = usages.filter((record) => record.effective === 'yes').length; return <span>{usages.length} 次使用 · {usages.length ? Math.round(effective / usages.length * 100) : 0}% 有效</span> }
+
+function allocation(logs: RecordData[], records: RecordData[]) { const grouped: Record<string, number> = {}; logs.forEach((log) => { const label = relationName(log.projectId, records) || String(log.category || '未分配'); grouped[label] = (grouped[label] || 0) + durationMinutes(log) }); const total = Object.values(grouped).reduce((sum, value) => sum + value, 0); return Object.entries(grouped).sort(([, a], [, b]) => b - a).map(([label, minutes]) => ({ label, minutes, percentage: total ? minutes / total * 100 : 0 })) }
+function relationName(id: unknown, records: RecordData[]) { if (!id) return ''; return titleFor(records.find((record) => record.id === id) || {}) }
+function relationSummary(record: RecordData) { const count = Object.entries(record).filter(([key, value]) => (key.endsWith('Id') || key.endsWith('Ids')) && value).length; return count ? `${count} 个关联字段` : '暂无关联' }
+function priorityRank(value: unknown) { return ({ high: 0, medium: 1, low: 2 }[String(value)] ?? 3) }
+function greeting() { const hour = new Date().getHours(); return hour < 6 ? '夜深了' : hour < 11 ? '早上好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好' }
+function groupBy<T>(items: T[], key: (item: T) => string) { return items.reduce<Record<string, T[]>>((groups, item) => { const value = key(item); (groups[value] ||= []).push(item); return groups }, {}) }
+function conversionInitial(source: RecordData, target: Entity): Partial<RecordData> { const common = { projectId: source.projectId, goalId: source.goalId }; if (target === 'reviews') return { ...common, resultId: source.id, title: `复盘：${titleFor(source)}`, whatHappened: source.actual || source.actualResult }; if (source.entity === 'reviews') { const content = source.lesson || source.doDifferently || source.whatHappened; if (target === 'insights') return { ...common, reviewId: source.id, statement: content, explanation: source.whyItHappened }; if (target === 'principles') return { statement: content, evidence: source.whatHappened, reviewIds: [source.id] }; if (target === 'knowledge') return { ...common, title: titleFor(source), content, reviewIds: [source.id] }; if (target === 'tasks') return { ...common, title: source.nextAction, status: 'todo' }; if (target === 'decisions') return { ...common, title: source.nextAction || titleFor(source), context: source.lesson, status: 'pending' } } if (source.entity === 'inbox') return { ...common, title: source.content, content: source.content, statement: source.content, description: source.content }; return common }
+function paletteActions({ setSearchOpen, setPaletteOpen, openCreate, startTimer, setAiOpen, setView }: { setSearchOpen: (value: boolean) => void; setPaletteOpen: (value: boolean) => void; openCreate: (entity: Entity, initial?: Partial<RecordData>) => void; startTimer: () => void; setAiOpen: (value: boolean) => void; setView: (view: View) => void }) { const run = (action: () => void) => () => { setPaletteOpen(false); action() }; return [{ label: '全局搜索', hint: '搜索所有本地记录', icon: '⌕', run: run(() => setSearchOpen(true)) }, { label: '快速收集', hint: '保存到收集箱', icon: '＋', run: run(() => openCreate('inbox')) }, { label: '创建任务', hint: '添加下一步行动', icon: '□', run: run(() => openCreate('tasks')) }, { label: '创建项目', hint: '建立工作空间', icon: '◈', run: run(() => openCreate('projects')) }, { label: '开始计时', hint: '记录现实投入', icon: '▶', run: run(startTimer) }, { label: '创建决策', hint: '记录预测和理由', icon: '◆', run: run(() => openCreate('decisions', { date: today() })) }, { label: '创建复盘', hint: '从现实提炼学习', icon: '◑', run: run(() => openCreate('reviews')) }, { label: '创建知识', hint: '沉淀长期资产', icon: '⌘', run: run(() => openCreate('knowledge')) }, { label: '打开 AI 助理', hint: '基于当前上下文分析', icon: 'AI', run: run(() => setAiOpen(true)) }, { label: '打开今天', hint: '进入 Focus 工作视图', icon: '◉', run: run(() => setView('today')) }] }
+
+export default App

@@ -4,6 +4,7 @@ export type Entity =
   | 'reviews' | 'knowledge' | 'insights' | 'principles' | 'mentalModels' | 'mentalModelUsages'
   | 'decisions' | 'inbox' | 'events' | 'people' | 'dataRecords' | 'attachments' | 'timelineEvents' | 'agentRuns' | 'agentActions'
   | 'externalSources' | 'signals' | 'opportunities' | 'intelligenceBriefs'
+  | 'financialAccounts' | 'financialCategories' | 'financialTransactions'
 
 export type RecordData = Record<string, unknown> & {
   id: string
@@ -21,11 +22,13 @@ export type Field = {
   key: string
   label: string
   multiline?: boolean
-  type?: 'date' | 'datetime-local' | 'number' | 'select'
+  type?: 'date' | 'datetime-local' | 'number' | 'select' | 'money'
   options?: FieldOption[]
   relation?: Entity
   multiple?: boolean
   placeholder?: string
+  readOnly?: boolean
+  currencyKey?: string
 }
 export type EntityConfig = {
   entity: Entity
@@ -94,11 +97,39 @@ export const entities: EntityConfig[] = [
     { key: 'goalId', label: '目标', relation: 'goals' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'taskId', label: '任务', relation: 'tasks' },
     { key: 'category', label: '类别' }, { key: 'energyLevel', label: '精力（1-5）', type: 'number' },
   ] },
-  { entity: 'results', label: '结果', singular: '结果', icon: '✓', titleKey: 'title', description: '记录现实结果，并与预期比较。', fields: [
-    { key: 'title', label: '结果名称' }, { key: 'expected', label: '预期', multiline: true }, { key: 'actual', label: '实际', multiline: true },
-    { key: 'variance', label: '偏差', multiline: true }, { key: 'impact', label: '影响', multiline: true }, { key: 'evidence', label: '证据', multiline: true },
-    { key: 'date', label: '日期', type: 'date' }, { key: 'source', label: '来源' }, { key: 'taskId', label: '任务', relation: 'tasks' },
-    { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'goalId', label: '目标', relation: 'goals' }, { key: 'decisionId', label: '决策', relation: 'decisions' }, { key: 'hypothesisId', label: '假设', relation: 'hypotheses' },
+  { entity: 'results', label: '结果 / Outcome', singular: '结果', icon: '✓', titleKey: 'title', description: '记录项目或行动产生的现实结果，并用证据比较预期与实际。', fields: [
+    { key: 'title', label: '结果名称' }, { key: 'description', label: '结果说明', multiline: true },
+    { key: 'outcomeType', label: '结果类型', type: 'select', options: [option('FINANCIAL', '财务结果'), option('QUANTITATIVE', '数量结果'), option('QUALITATIVE', '定性结果'), option('MILESTONE', '里程碑'), option('LEARNING', '学习结果'), option('STRATEGIC', '战略结果')] },
+    { key: 'status', label: '状态', type: 'select', options: [option('PLANNED', '计划中'), option('IN_PROGRESS', '进行中'), option('ACHIEVED', '已达成'), option('PARTIALLY_ACHIEVED', '部分达成'), option('MISSED', '未达成'), option('CANCELLED', '已取消')] },
+    { key: 'metricKind', label: '衡量方式', type: 'select', options: [option('MONEY', '金额'), option('NUMBER', '数值'), option('TIME', '时间'), option('PERCENTAGE', '百分比'), option('QUALITATIVE', '定性描述')] },
+    { key: 'currency', label: '币种', type: 'select', options: [option('CNY'), option('USD'), option('JPY'), option('EUR'), option('HKD')] }, { key: 'unit', label: '单位' },
+    { key: 'targetAmountMinor', label: '预期金额', type: 'money', currencyKey: 'currency' }, { key: 'actualAmountMinor', label: '实际金额', type: 'money', currencyKey: 'currency' },
+    { key: 'targetValue', label: '预期数值' }, { key: 'actualValue', label: '实际数值' },
+    { key: 'achievementBps', label: '完成率（基点）', readOnly: true }, { key: 'varianceAmountMinor', label: '金额偏差', type: 'money', currencyKey: 'currency', readOnly: true }, { key: 'varianceValue', label: '数值偏差', readOnly: true },
+    { key: 'expected', label: '预期描述（兼容旧记录）', multiline: true }, { key: 'actual', label: '实际描述（兼容旧记录）', multiline: true },
+    { key: 'variance', label: '偏差说明', multiline: true }, { key: 'impact', label: '影响', multiline: true }, { key: 'evidence', label: '证据', multiline: true },
+    { key: 'evidenceStatus', label: '证据状态', type: 'select', options: [option('VERIFIED', '已核验'), option('RECORDED', '已记录'), option('ESTIMATED', '估算'), option('MISSING', '数据缺失')] },
+    { key: 'startDate', label: '开始日期', type: 'date' }, { key: 'endDate', label: '结束日期', type: 'date' }, { key: 'date', label: '结果日期', type: 'date' }, { key: 'source', label: '来源' },
+    { key: 'taskId', label: '任务', relation: 'tasks' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'goalId', label: '目标', relation: 'goals' }, { key: 'decisionId', label: '决策', relation: 'decisions' }, { key: 'hypothesisId', label: '假设', relation: 'hypotheses' },
+  ] },
+  { entity: 'financialAccounts', label: '财务账户', singular: '账户', icon: '◉', titleKey: 'name', description: '记录真实资金账户；余额由已入账流水计算，不允许直接修改当前余额。', fields: [
+    { key: 'name', label: '账户名称' }, { key: 'accountType', label: '账户类型', type: 'select', options: [option('BANK', '银行'), option('CASH', '现金'), option('PAYMENT_PLATFORM', '支付平台'), option('WALLET', '钱包'), option('OTHER', '其他')] },
+    { key: 'currency', label: '币种', type: 'select', options: [option('CNY'), option('USD'), option('JPY'), option('EUR'), option('HKD')] }, { key: 'openingBalanceMinor', label: '期初余额', type: 'money', currencyKey: 'currency' },
+    { key: 'status', label: '状态', type: 'select', options: [option('ACTIVE', '启用'), option('INACTIVE', '停用')] }, { key: 'evidenceStatus', label: '余额状态', type: 'select', options: [option('VERIFIED', '已核验'), option('RECORDED', '按流水计算'), option('MISSING', '数据缺失')] },
+    { key: 'verifiedAt', label: '最近核验时间', type: 'datetime-local' }, { key: 'description', label: '说明', multiline: true },
+  ] },
+  { entity: 'financialCategories', label: '财务分类', singular: '财务分类', icon: '≡', titleKey: 'name', description: '用于经营分析的轻量分类，不建立复杂会计科目。', fields: [
+    { key: 'name', label: '分类名称' }, { key: 'direction', label: '方向', type: 'select', options: [option('INCOME', '收入'), option('EXPENSE', '支出'), option('BOTH', '通用')] }, { key: 'parentCategoryId', label: '上级分类', relation: 'financialCategories' }, { key: 'status', label: '状态', type: 'select', options: [option('ACTIVE', '启用'), option('INACTIVE', '停用')] },
+  ] },
+  { entity: 'financialTransactions', label: '财务流水', singular: '财务流水', icon: '¥', titleKey: 'title', description: '记录资金事实。已入账流水不能删除；错误通过作废、退款或调整修正。', fields: [
+    { key: 'title', label: '交易说明' }, { key: 'transactionType', label: '交易类型', type: 'select', options: [option('INCOME', '收入'), option('EXPENSE', '支出'), option('TRANSFER', '转账'), option('REFUND', '退款'), option('ADJUSTMENT', '余额调整')] },
+    { key: 'status', label: '状态', type: 'select', options: [option('DRAFT', '草稿'), option('POSTED', '已入账'), option('VOIDED', '已作废')] },
+    { key: 'amountMinor', label: '原币金额', type: 'money', currencyKey: 'currency' }, { key: 'currency', label: '原币币种', type: 'select', options: [option('CNY'), option('USD'), option('JPY'), option('EUR'), option('HKD')] },
+    { key: 'baseCurrency', label: '基础币种', type: 'select', options: [option('CNY'), option('USD'), option('JPY'), option('EUR'), option('HKD')] }, { key: 'baseAmountMinor', label: '基础币金额', type: 'money', currencyKey: 'baseCurrency' }, { key: 'exchangeRate', label: '手动汇率' },
+    { key: 'occurredAt', label: '发生时间', type: 'datetime-local' }, { key: 'accountId', label: '来源账户', relation: 'financialAccounts' }, { key: 'destinationAccountId', label: '目标账户（转账）', relation: 'financialAccounts' }, { key: 'categoryId', label: '分类', relation: 'financialCategories' },
+    { key: 'goalId', label: '目标', relation: 'goals' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'taskId', label: '任务', relation: 'tasks' },
+    { key: 'refundKind', label: '退款类型', type: 'select', options: [option('EXPENSE_REFUND', '费用退款'), option('INCOME_REFUND', '收入退款')] }, { key: 'refundOfTransactionId', label: '原交易', relation: 'financialTransactions' }, { key: 'adjustmentDirection', label: '调整方向', type: 'select', options: [option('INCREASE', '增加'), option('DECREASE', '减少')] },
+    { key: 'channel', label: '渠道' }, { key: 'evidenceStatus', label: '证据状态', type: 'select', options: [option('VERIFIED', '已核验'), option('RECORDED', '已记录'), option('ESTIMATED', '估算'), option('MISSING', '数据缺失')] }, { key: 'description', label: '备注', multiline: true }, { key: 'voidReason', label: '作废原因', multiline: true },
   ] },
   { entity: 'reviews', label: '复盘', singular: '复盘', icon: '◑', titleKey: 'title', description: '把现实转化为可以改变未来行动的经验。', fields: [
     { key: 'title', label: '复盘主题' }, { key: 'whatHappened', label: '发生了什么', multiline: true }, { key: 'whyItHappened', label: '为什么', multiline: true },
@@ -139,7 +170,12 @@ export const entities: EntityConfig[] = [
     { key: 'title', label: '决策名称' }, { key: 'problem', label: '问题', multiline: true }, { key: 'context', label: '背景', multiline: true },
     { key: 'options', label: '备选方案', multiline: true }, { key: 'selectedOption', label: '选择', multiline: true }, { key: 'reasoning', label: '理由', multiline: true },
     { key: 'evidence', label: '证据', multiline: true }, { key: 'prediction', label: '预测', multiline: true }, { key: 'confidence', label: '置信度（0-100）', type: 'number' },
+    { key: 'decisionLevel', label: '决策级别', type: 'select', options: [option('OPERATIONAL', '日常'), option('MATERIAL', '重要'), option('STRATEGIC', '战略')] },
+    { key: 'expectedOutcome', label: '预期结果', multiline: true }, { key: 'expectedRevenueMinor', label: '预期收入', type: 'money', currencyKey: 'currency' }, { key: 'expectedCostMinor', label: '预期成本', type: 'money', currencyKey: 'currency' }, { key: 'currency', label: '币种', type: 'select', options: [option('CNY'), option('USD'), option('JPY'), option('EUR'), option('HKD')] },
+    { key: 'expectedTimeMinutes', label: '预期时间（分钟）', type: 'number' }, { key: 'expectedCompletionDate', label: '预期完成日期', type: 'date' }, { key: 'reviewDueDate', label: '复盘日期', type: 'date' },
+    { key: 'evidenceSnapshotAt', label: '证据快照时间', type: 'datetime-local', readOnly: true }, { key: 'dataCoverage', label: '决策数据覆盖（%）', type: 'number', readOnly: true }, { key: 'knownUnknowns', label: '已知数据缺口', multiline: true }, { key: 'evidenceSnapshot', label: '决策时证据快照', multiline: true, readOnly: true },
     { key: 'date', label: '决策日期', type: 'date' }, { key: 'status', label: '状态', type: 'select', options: statuses.decision }, { key: 'outcome', label: '实际结果', multiline: true },
+    { key: 'actualRevenueMinor', label: '实际收入', type: 'money', currencyKey: 'currency' }, { key: 'actualCostMinor', label: '实际成本', type: 'money', currencyKey: 'currency' }, { key: 'actualTimeMinutes', label: '实际时间（分钟）', type: 'number' }, { key: 'actualCompletionDate', label: '实际完成日期', type: 'date' },
     { key: 'taskId', label: '任务', relation: 'tasks' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'goalId', label: '目标', relation: 'goals' },
     { key: 'knowledgeId', label: '知识', relation: 'knowledge' }, { key: 'insightId', label: '洞见', relation: 'insights' }, { key: 'resultId', label: '结果', relation: 'results' }, { key: 'reviewId', label: '复盘', relation: 'reviews' },
     { key: 'signalIds', label: '来源信号', relation: 'signals', multiple: true }, { key: 'opportunityId', label: '来源机会', relation: 'opportunities' },
@@ -200,9 +236,9 @@ export const entities: EntityConfig[] = [
 export const configFor = (entity: Entity) => entities.find((item) => item.entity === entity)!
 export const titleFor = (record: Partial<RecordData>) => String(record.title || record.name || record.statement || record.content || record.context || '未命名')
 export const descriptionFor = (record: Partial<RecordData>) => String(record.description || record.why || record.statement || record.content || record.problem || record.actual || record.actualResult || record.lesson || record.corePrinciple || record.framework || record.notes || '')
-export const statusLabel = (value: unknown) => ({ active: '进行中', planned: '计划中', paused: '已暂停', completed: '已完成', archived: '已归档', blocked: '受阻', healthy: '健康', at_risk: '有风险', inbox: '收集箱', todo: '待办', in_progress: '进行中', waiting: '等待中', cancelled: '已取消', untested: '未测试', testing: '测试中', validated: '已验证', rejected: '已否定', inconclusive: '无结论', pending: '待决定', decided: '已决定', monitoring: '观察中', partially_correct: '部分正确', wrong: '错误', unknown: '未知', unprocessed: '待处理', processed: '已处理', running: '进行中' }[String(value)] || String(value || '未设置'))
+export const statusLabel = (value: unknown) => ({ active: '进行中', planned: '计划中', paused: '已暂停', completed: '已完成', archived: '已归档', blocked: '受阻', healthy: '健康', at_risk: '有风险', inbox: '收集箱', todo: '待办', in_progress: '进行中', waiting: '等待中', cancelled: '已取消', untested: '未测试', testing: '测试中', validated: '已验证', rejected: '已否定', inconclusive: '无结论', pending: '待决定', decided: '已决定', monitoring: '观察中', partially_correct: '部分正确', wrong: '错误', unknown: '未知', unprocessed: '待处理', processed: '已处理', running: '进行中', PLANNED: '计划中', IN_PROGRESS: '进行中', ACHIEVED: '已达成', PARTIALLY_ACHIEVED: '部分达成', MISSED: '未达成', CANCELLED: '已取消', ACTIVE: '启用', INACTIVE: '停用', DRAFT: '草稿', POSTED: '已入账', VOIDED: '已作废', VERIFIED: '已核验', RECORDED: '已记录', ESTIMATED: '估算', MISSING: '数据缺失' }[String(value)] || String(value || '未设置'))
 export const priorityLabel = (value: unknown) => ({ high: '高', medium: '中', low: '低' }[String(value)] || String(value || '未设置'))
-export const isActive = (record: Partial<RecordData>) => !['completed', 'archived', 'processed', 'cancelled', 'validated', 'rejected', 'wrong', '已完成', '已归档', '已处理'].includes(String(record.status || 'active'))
+export const isActive = (record: Partial<RecordData>) => !['completed', 'archived', 'processed', 'cancelled', 'validated', 'rejected', 'wrong', '已完成', '已归档', '已处理', 'ACHIEVED', 'CANCELLED', 'VOIDED'].includes(String(record.status || 'active'))
 export const localDateKey = (value: Date | string | number = new Date()) => { const date = value instanceof Date ? value : new Date(Number(value) || value); return Number.isNaN(date.getTime()) ? '' : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` }
 export const recordDate = timelineOccurredAt
 export const isToday = (value: unknown) => localDateKey(String(value || '')) === localDateKey()

@@ -29,6 +29,10 @@ export const toolRegistry: ToolDefinition[] = [
   tool('createExternalSource', '创建外部情报监控源', 'externalSources', 'CREATE', 'MEDIUM_WRITE', true), tool('getExternalSources', '读取情报源与同步状态', 'externalSources', 'READ', 'READ', false), tool('updateExternalSource', '更新或暂停情报源', 'externalSources', 'UPDATE', 'MEDIUM_WRITE', true),
   tool('getExternalBriefing', '读取有证据的 CEO 外部情报简报', 'intelligenceBriefs', 'READ', 'READ', false), tool('getExternalSignals', '读取外部信号及证据口径', 'signals', 'READ', 'READ', false), tool('updateExternalSignal', '观察、忽略或验证外部信号', 'signals', 'UPDATE', 'MEDIUM_WRITE', true),
   tool('createOpportunity', '把已确认信号转为机会草稿', 'opportunities', 'CREATE', 'LOW_WRITE', true), tool('getOpportunities', '读取机会与数据缺口', 'opportunities', 'READ', 'READ', false), tool('updateOpportunity', '更新机会评估', 'opportunities', 'UPDATE', 'MEDIUM_WRITE', true),
+  tool('createOutcome', '创建带预期、实际和证据状态的 Outcome 草稿', 'results', 'CREATE', 'MEDIUM_WRITE', true), tool('getOutcomes', '读取 Outcome 与预期实际偏差', 'results', 'READ', 'READ', false), tool('updateOutcome', '更新 Outcome 实际结果与证据', 'results', 'UPDATE', 'MEDIUM_WRITE', true),
+  tool('createFinancialAccount', '创建资金账户', 'financialAccounts', 'CREATE', 'MEDIUM_WRITE', true), tool('getFinancialAccounts', '读取账户与核验状态', 'financialAccounts', 'READ', 'READ', false),
+  tool('createFinancialCategory', '创建经营分类', 'financialCategories', 'CREATE', 'LOW_WRITE', true), tool('getFinancialCategories', '读取经营分类', 'financialCategories', 'READ', 'READ', false),
+  tool('createFinancialTransaction', '创建财务流水草稿；不得直接入账', 'financialTransactions', 'CREATE', 'HIGH_RISK', true), tool('getFinancialTransactions', '读取财务流水事实', 'financialTransactions', 'READ', 'READ', false), tool('getProjectFinancials', '读取项目时间、资金、Outcome 与数据缺口', 'financialTransactions', 'READ', 'READ', false), tool('voidFinancialTransaction', '作废已入账流水并保留原因', 'financialTransactions', 'UPDATE', 'HIGH_RISK', true),
 ]
 
 export const toolFor = (name: string) => toolRegistry.find((item) => item.name === name)

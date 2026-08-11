@@ -1,4 +1,5 @@
 mod external_intelligence;
+mod finance;
 mod redfox;
 
 use regex::Regex;
@@ -46,6 +47,9 @@ const ENTITIES: &[&str] = &[
     "signals",
     "opportunities",
     "intelligenceBriefs",
+    "financialAccounts",
+    "financialCategories",
+    "financialTransactions",
 ];
 
 fn now() -> String {
@@ -91,6 +95,7 @@ const TIMELINE_SOURCE_ENTITIES: &[&str] = &[
     "signals",
     "opportunities",
     "intelligenceBriefs",
+    "financialTransactions",
     "timelineEvents",
 ];
 
@@ -138,6 +143,10 @@ fn timeline_semantics(
         "intelligenceBriefs" => (
             first_timeline_value(data, &["generatedAt"]).unwrap_or_else(|| created_at.into()),
             "recorded",
+        ),
+        "financialTransactions" => (
+            first_timeline_value(data, &["occurredAt"]).unwrap_or_else(|| created_at.into()),
+            "actual",
         ),
         "tasks" if data.get("status").and_then(Value::as_str) == Some("completed") => (
             first_timeline_value(data, &["completedAt"]).unwrap_or_else(|| updated_at.into()),
@@ -566,6 +575,7 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
             .map_err(|error| error.to_string())?;
     }
     external_intelligence::migrate(&connection, &now())?;
+    finance::migrate(&connection, &now())?;
     Ok(connection)
 }
 
@@ -719,6 +729,9 @@ fn expected_entity(key: &str) -> Option<&'static str> {
         "sourceDecisionId" => Some("decisions"),
         "sourceOpportunityId" => Some("opportunities"),
         "sourceSignalId" => Some("signals"),
+        "accountId" | "destinationAccountId" => Some("financialAccounts"),
+        "categoryId" | "parentCategoryId" => Some("financialCategories"),
+        "transactionId" | "refundOfTransactionId" => Some("financialTransactions"),
         _ => None,
     }
 }
@@ -899,6 +912,8 @@ fn normalize_record(
             Value::String(if running { "running" } else { "completed" }.into()),
         );
     }
+
+    finance::normalize(entity, &mut normalized)?;
 
     let keys = normalized
         .as_object()
@@ -1104,7 +1119,7 @@ fn get_record(app: AppHandle, id: String) -> Result<Option<Value>, String> {
 }
 
 #[tauri::command]
-fn save_record(app: AppHandle, entity: String, data: Value) -> Result<Value, String> {
+fn save_record(app: AppHandle, entity: String, mut data: Value) -> Result<Value, String> {
     if !is_entity(&entity) {
         return Err("Unknown entity".into());
     }
@@ -1119,6 +1134,9 @@ fn save_record(app: AppHandle, entity: String, data: Value) -> Result<Value, Str
         .unwrap_or_else(|| new_id(&entity));
     let connection = db(&app)?;
     let existing = record_by_id(&connection, &id)?;
+    if entity == "decisions" && existing.is_none() {
+        finance::freeze_decision_snapshot(&connection, &mut data, &now())?;
+    }
     ensure_external_source_capacity(&connection, &entity, &id, &data)?;
     let created_at = existing
         .as_ref()
@@ -1128,6 +1146,7 @@ fn save_record(app: AppHandle, entity: String, data: Value) -> Result<Value, Str
         .map(str::to_string)
         .unwrap_or_else(now);
     let normalized = normalize_record(&connection, &entity, &data, true)?;
+    finance::validate_transition(&entity, existing.as_ref(), &normalized)?;
     let enriched = apply_timeline_metadata(&entity, &normalized, &created_at, &now());
     if entity == "timeLogs" && enriched["isRunning"].as_bool().unwrap_or(false) {
         let another_running: bool = connection.query_row(
@@ -1159,6 +1178,11 @@ fn archive_record(app: AppHandle, id: String) -> Result<(), String> {
     let Some(mut data) = record_by_id(&connection, &id)? else {
         return Err("记录不存在".into());
     };
+    if data["entity"].as_str() == Some("financialTransactions")
+        && data["status"].as_str().unwrap_or("POSTED") != "DRAFT"
+    {
+        return Err("已入账财务流水不能归档或删除；请将状态改为 VOIDED 并填写作废原因".into());
+    }
     let archived_at = now();
     if let Some(object) = data.as_object_mut() {
         object.insert("archivedAt".into(), Value::String(archived_at.clone()));
@@ -1633,6 +1657,11 @@ fn existing_inbox_capture(
         params![source_url, canonical_url],
         |row| Ok(value_to_record(row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
     ).optional().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_finance_summary(app: AppHandle, project_id: Option<String>) -> Result<Value, String> {
+    finance::summary(&db(&app)?, project_id.as_deref())
 }
 
 #[tauri::command]
@@ -2392,6 +2421,14 @@ fn agent_tool_metadata(tool: &str) -> Option<(&'static str, &'static str, bool, 
         "updateExternalSignal" => Some(("signals", "MEDIUM_WRITE", true, "UPDATE")),
         "createOpportunity" => Some(("opportunities", "LOW_WRITE", true, "CREATE")),
         "updateOpportunity" => Some(("opportunities", "MEDIUM_WRITE", true, "UPDATE")),
+        "createOutcome" => Some(("results", "MEDIUM_WRITE", true, "CREATE")),
+        "updateOutcome" => Some(("results", "MEDIUM_WRITE", true, "UPDATE")),
+        "createFinancialAccount" => Some(("financialAccounts", "MEDIUM_WRITE", true, "CREATE")),
+        "createFinancialCategory" => Some(("financialCategories", "LOW_WRITE", true, "CREATE")),
+        "createFinancialTransaction" => {
+            Some(("financialTransactions", "HIGH_RISK", true, "CREATE"))
+        }
+        "voidFinancialTransaction" => Some(("financialTransactions", "HIGH_RISK", true, "UPDATE")),
         _ => None,
     }
 }
@@ -2418,7 +2455,9 @@ fn required_agent_fields(entity: &str) -> &'static [&'static str] {
         "goals" | "projects" | "tasks" | "decisions" | "reviews" => &["title"],
         "insights" | "principles" => &["statement"],
         "externalSources" => &["name"],
-        "signals" | "opportunities" | "intelligenceBriefs" => &["title"],
+        "signals" | "opportunities" | "intelligenceBriefs" | "results" => &["title"],
+        "financialTransactions" => &["title", "transactionType", "amountMinor"],
+        "financialAccounts" | "financialCategories" => &["name"],
         "timeLogs" => &["title"],
         _ => &[],
     }
@@ -2640,6 +2679,14 @@ fn preview_label(key: &str) -> &str {
         "taskId" => "任务",
         "statement" => "内容",
         "content" => "内容",
+        "transactionType" => "交易类型",
+        "amountMinor" => "金额（最小单位）",
+        "currency" => "币种",
+        "accountId" => "账户",
+        "outcomeType" => "结果类型",
+        "targetAmountMinor" => "预期金额（最小单位）",
+        "actualAmountMinor" => "实际金额（最小单位）",
+        "evidenceStatus" => "证据状态",
         _ => key,
     }
 }
@@ -2657,6 +2704,14 @@ fn action_preview_fields(input: &Value) -> Vec<Value> {
         "useCases",
         "statement",
         "content",
+        "transactionType",
+        "amountMinor",
+        "currency",
+        "accountId",
+        "outcomeType",
+        "targetAmountMinor",
+        "actualAmountMinor",
+        "evidenceStatus",
         "dueDate",
         "projectId",
         "goalId",
@@ -2760,6 +2815,12 @@ fn execute_registered_tool(app: AppHandle, action: &Value) -> Result<Value, Stri
         if let Some(action_id) = action.get("actionId").and_then(Value::as_str) {
             object.insert("agentActionId".into(), Value::String(action_id.into()));
             object.insert("evidenceLevel".into(), Value::String("AI_CONFIRMED".into()));
+        }
+        if tool == "createFinancialTransaction" {
+            object.insert("status".into(), Value::String("DRAFT".into()));
+        }
+        if tool == "voidFinancialTransaction" {
+            object.insert("status".into(), Value::String("VOIDED".into()));
         }
     }
     validate_agent_input(entity, action_type, &input)?;
@@ -3055,7 +3116,10 @@ fn ask_chief_blocking(
 11. 当当前页面上下文 analysisMode=timeline_readonly 时，只能进行基于证据的只读分析，mode 必须为 chat，禁止生成 Action。
 12. External Intelligence 分析必须区分事实、确定性计算、AI 推断、数据缺口和替代解释；不得把爆款等同于需求，不得把转载等同于独立信号。
 13. 创建情报源、机会或由信号生成决策时必须生成 Action 预览；不得自动创建 Project、增加预算、采购或修改财务。
-14. 外部指标只能引用 VERIFIED_EXTERNAL_TOOL_RESULT、Signal 或真实本地记录；缺失时必须说明数据不足。"#;
+14. 外部指标只能引用 VERIFIED_EXTERNAL_TOOL_RESULT、Signal 或真实本地记录；缺失时必须说明数据不足。
+15. Finance、Outcome 与 Project Economics 必须区分事实、确定性计算、推断和数据缺口；MISSING 不能解释为 0。
+16. 现金净流动、项目经营贡献不等于会计利润；不得把库存采购直接判断为项目亏损。
+17. AI 创建 Outcome、账户、分类或财务流水只能生成 Action 预览。财务流水默认 DRAFT，禁止直接创建 POSTED 流水、自动付款、增加预算或修改账户余额。"#;
     let mut messages = Vec::new();
     let recent_history = history.unwrap_or_default();
     let skip = recent_history.len().saturating_sub(10);
@@ -3137,6 +3201,7 @@ pub fn run() {
             initialize_database,
             check_relationship_integrity,
             capture_link,
+            get_finance_summary,
             get_capture_provider_config,
             configure_capture_provider,
             test_capture_provider,
@@ -3175,6 +3240,31 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn outcome_and_finance_entities_and_agent_tools_are_registered() {
+        for entity in [
+            "results",
+            "financialAccounts",
+            "financialCategories",
+            "financialTransactions",
+        ] {
+            assert!(is_entity(entity));
+        }
+        assert_eq!(agent_tool_metadata("createOutcome").unwrap().0, "results");
+        assert_eq!(
+            agent_tool_metadata("createFinancialTransaction").unwrap().1,
+            "HIGH_RISK"
+        );
+        assert_eq!(
+            expected_entity("destinationAccountId"),
+            Some("financialAccounts")
+        );
+        assert_eq!(
+            expected_entity("refundOfTransactionId"),
+            Some("financialTransactions")
+        );
+    }
+
     #[test]
     fn external_intelligence_entities_and_agent_tools_are_registered() {
         for entity in [

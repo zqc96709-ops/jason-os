@@ -4,6 +4,7 @@ import { toolRegistry } from './agent/toolRegistry'
 import type { AgentActionResult, AgentContext, AgentResponse, ChatMessage } from './agent/types'
 import type { Entity, RecordData } from './model'
 import type { ExternalItem } from './externalIntelligence'
+import { projectEconomics } from './finance'
 export type { ChatMessage } from './agent/types'
 
 export type AiModelOption = { id: string; label: string; description: string }
@@ -11,6 +12,7 @@ export type AiProviderId = 'hackstart' | 'deepseek' | 'minimax' | 'volc-agent-pl
 export type AiProviderOption = { id: AiProviderId; label: string; configured: boolean; baseUrl: string; model: string; models: AiModelOption[] }
 export type HackStartConfig = { provider: AiProviderId; providerLabel: string; configured: boolean; model: string; baseUrl: string; providers: AiProviderOption[] }
 export type BackupInfo = { name: string; path: string; size: number; modified: string }
+export type FinanceSummary = { baseCurrency: string; incomeMinor: string; expenseMinor: string; cashNetMinor: string; managementContributionMinor: string; timeMinutes: number; unitTimeContributionMinor?: string; postedTransactions: number; outcomeCount: number; verifiedOutcomeCount: number; dataCoverage: number; warnings: string[] }
 export type CaptureProviderConfig = { providers: { id: 'redfox'; label: string; configured: boolean; supportedPlatforms: string[]; automaticSync: boolean; mediaDownload: boolean }[] }
 
 const key = 'jason-os-browser-records'
@@ -49,6 +51,7 @@ export const api = {
   async configureAiProvider(provider: AiProviderId, apiKey: string, model: string): Promise<HackStartConfig> { if (browser()) throw new Error('浏览器模式不能写入 应用私有凭据文件（权限 0600）。请使用桌面应用。'); return invoke('configure_ai_provider', { provider, apiKey, model }) },
   async testAiProvider(provider: AiProviderId, model: string): Promise<{ ok: boolean; provider: string; model: string; latencyMs: number; content: string }> { if (browser()) throw new Error('浏览器模式不能测试真实 API。请使用桌面应用。'); return invoke('test_ai_provider', { provider, model }) },
   async openExternal(url: string): Promise<void> { if (browser()) { window.open(url, '_blank', 'noopener,noreferrer'); return }; return invoke('open_external', { url }) },
+  async getFinanceSummary(projectId?: string): Promise<FinanceSummary> { if (browser()) { const result = projectEconomics(read(), projectId); return { baseCurrency: 'CNY', incomeMinor: result.incomeMinor.toString(), expenseMinor: result.expenseMinor.toString(), cashNetMinor: result.cashNetMinor.toString(), managementContributionMinor: result.managementContributionMinor.toString(), timeMinutes: result.timeMinutes, unitTimeContributionMinor: result.unitTimeContributionMinor?.toString(), postedTransactions: result.postedTransactions, outcomeCount: result.outcomeCount, verifiedOutcomeCount: result.verifiedOutcomeCount, dataCoverage: result.dataCoverage, warnings: [] } } return invoke('get_finance_summary', { projectId }) },
   async getCaptureProviderConfig(): Promise<CaptureProviderConfig> { return browser() ? { providers: [{ id: 'redfox', label: 'RedFoxHub', configured: false, supportedPlatforms: ['微信公众号', '抖音', '小红书'], automaticSync: false, mediaDownload: false }] } : invoke('get_capture_provider_config') },
   async configureCaptureProvider(provider: 'redfox', apiKey: string): Promise<CaptureProviderConfig> { if (browser()) throw new Error('浏览器模式不能保存采集凭据。请使用桌面应用。'); return invoke('configure_capture_provider', { provider, apiKey }) },
   async testCaptureProvider(provider: 'redfox', url: string): Promise<{ ok: boolean; provider: string; latencyMs: number; content: Record<string, unknown> }> { if (browser()) throw new Error('浏览器模式不能测试真实采集 API。'); return invoke('test_capture_provider', { provider, url }) },

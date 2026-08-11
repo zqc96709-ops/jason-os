@@ -2,7 +2,7 @@ import { entities, type Entity } from '../model'
 import type { SchemaDefinition } from './types'
 
 const required: Partial<Record<Entity, string[]>> = {
-  goals: ['title'], projects: ['title'], tasks: ['title'], timeLogs: ['title', 'startAt'], knowledge: ['title', 'content'], reviews: ['title'], insights: ['statement'], principles: ['statement'], mentalModels: ['name'], decisions: ['title'], events: ['title'], people: ['name'], externalSources: ['name'], signals: ['title'], opportunities: ['title'], intelligenceBriefs: ['title'],
+  goals: ['title'], projects: ['title'], tasks: ['title'], timeLogs: ['title', 'startAt'], results: ['title'], knowledge: ['title', 'content'], reviews: ['title'], insights: ['statement'], principles: ['statement'], mentalModels: ['name'], decisions: ['title'], events: ['title'], people: ['name'], externalSources: ['name'], signals: ['title'], opportunities: ['title'], intelligenceBriefs: ['title'], financialAccounts: ['name'], financialCategories: ['name'], financialTransactions: ['title', 'transactionType', 'amountMinor'],
 }
 
 const allowed: Partial<Record<Entity, string[]>> = {
@@ -10,17 +10,18 @@ const allowed: Partial<Record<Entity, string[]>> = {
   projects: ['createProject', 'getProject', 'searchProjects', 'updateProject'],
   tasks: ['createTask', 'getTask', 'searchTasks', 'updateTask', 'completeTask'],
   timeLogs: ['startTimer', 'stopTimer', 'createTimeRecord', 'getTimeRecords'],
+  results: ['createOutcome', 'getOutcomes', 'updateOutcome'],
   knowledge: ['createKnowledge', 'getKnowledge', 'searchKnowledge', 'updateKnowledge'],
   reviews: ['createReview', 'getReview'], insights: ['createInsight'], principles: ['createPrinciple', 'searchPrinciples'],
   mentalModels: ['createMentalModel', 'getMentalModel', 'searchMentalModels', 'updateMentalModel'],
   decisions: ['createDecision', 'getDecision', 'searchDecisions', 'updateDecision'],
   externalSources: ['createExternalSource', 'getExternalSources', 'updateExternalSource'],
-  signals: ['getExternalSignals', 'updateExternalSignal'], opportunities: ['createOpportunity', 'getOpportunities', 'updateOpportunity'], intelligenceBriefs: ['getExternalBriefing'],
+  signals: ['getExternalSignals', 'updateExternalSignal'], opportunities: ['createOpportunity', 'getOpportunities', 'updateOpportunity'], intelligenceBriefs: ['getExternalBriefing'], financialAccounts: ['createFinancialAccount', 'getFinancialAccounts'], financialCategories: ['createFinancialCategory', 'getFinancialCategories'], financialTransactions: ['createFinancialTransaction', 'getFinancialTransactions', 'getProjectFinancials', 'voidFinancialTransaction'],
 }
 
 const relationMap = (entity: Entity) => Object.fromEntries(entities.find((item) => item.entity === entity)?.fields.filter((field) => field.relation).map((field) => [field.key, field.relation!]) || [])
 
-export const schemaRegistry: SchemaDefinition[] = entities.filter((config) => ['goals', 'projects', 'tasks', 'timeLogs', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels', 'decisions', 'events', 'people', 'externalSources', 'signals', 'opportunities', 'intelligenceBriefs'].includes(config.entity)).map((config) => ({
+export const schemaRegistry: SchemaDefinition[] = entities.filter((config) => ['goals', 'projects', 'tasks', 'timeLogs', 'results', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels', 'decisions', 'events', 'people', 'externalSources', 'signals', 'opportunities', 'intelligenceBriefs', 'financialAccounts', 'financialCategories', 'financialTransactions'].includes(config.entity)).map((config) => ({
   entityName: config.entity,
   description: config.description,
   fields: config.fields.map((field) => field.key),

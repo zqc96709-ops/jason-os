@@ -20,6 +20,13 @@ describe('Jason OS Agent registries and context', () => {
     expect(toolFor('createOpportunity')).toMatchObject({ entity: 'opportunities', requiresConfirmation: true })
   })
 
+  it('guards Outcome and financial writes while exposing read schemas', () => {
+    expect(schemaFor('results')?.requiredFields).toContain('title')
+    expect(schemaFor('financialTransactions')?.relations).toMatchObject({ accountId: 'financialAccounts', projectId: 'projects' })
+    expect(toolFor('createOutcome')).toMatchObject({ entity: 'results', requiresConfirmation: true })
+    expect(toolFor('createFinancialTransaction')).toMatchObject({ entity: 'financialTransactions', riskLevel: 'HIGH_RISK', requiresConfirmation: true })
+  })
+
   it('derives Goal → Project → Task context from the current task', () => {
     const records = [record('goals', 'g1'), record('projects', 'p1', { goalId: 'g1' }), record('tasks', 't1', { projectId: 'p1', goalId: 'g1' })]
     expect(buildAgentContext({ currentRoute: 'tasks', records, selectedProjectId: null, detailId: 't1', conversation: [] })).toMatchObject({ currentEntityType: 'tasks', currentEntityId: 't1', currentTaskId: 't1', currentProjectId: 'p1', currentGoalId: 'g1' })

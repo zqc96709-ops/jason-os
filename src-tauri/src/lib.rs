@@ -691,6 +691,49 @@ fn valid_reference(
     }
 }
 
+fn align_context_from_reference(
+    connection: &Connection,
+    normalized: &mut Value,
+    relation_key: &str,
+    expected_entity: &str,
+    context_keys: &[&str],
+    strict: bool,
+) -> Result<(), String> {
+    let Some(reference_id) = string_field(normalized, relation_key) else {
+        return Ok(());
+    };
+    let Some(reference) = valid_reference(connection, &reference_id, expected_entity, strict)?
+    else {
+        normalized.as_object_mut().unwrap().remove(relation_key);
+        return Ok(());
+    };
+    for key in context_keys {
+        if let (Some(current), Some(parent)) =
+            (string_field(normalized, key), string_field(&reference, key))
+        {
+            if current != parent {
+                if strict {
+                    return Err(format!(
+                        "因果关联跨越不同上下文：{relation_key} 的 {key} 不一致"
+                    ));
+                }
+                normalized.as_object_mut().unwrap().remove(relation_key);
+                return Ok(());
+            }
+        }
+    }
+    let inherited = context_keys
+        .iter()
+        .filter(|key| string_field(normalized, key).is_none())
+        .map(|key| (*key, string_field(&reference, key)))
+        .collect::<Vec<_>>();
+    let object = normalized.as_object_mut().unwrap();
+    for (key, value) in inherited {
+        set_optional_id(object, key, value);
+    }
+    Ok(())
+}
+
 fn normalize_record(
     connection: &Connection,
     entity: &str,
@@ -752,6 +795,50 @@ fn normalize_record(
                     normalized.as_object_mut().unwrap().remove("projectId");
                 }
             }
+        }
+    }
+
+    if entity == "tasks" {
+        align_context_from_reference(
+            connection,
+            &mut normalized,
+            "decisionId",
+            "decisions",
+            &["projectId", "goalId"],
+            strict,
+        )?;
+    }
+
+    if entity == "reviews" {
+        align_context_from_reference(
+            connection,
+            &mut normalized,
+            "resultId",
+            "results",
+            &["taskId", "projectId", "goalId"],
+            strict,
+        )?;
+    }
+
+    if entity == "insights" {
+        if string_field(&normalized, "reviewId").is_some() {
+            align_context_from_reference(
+                connection,
+                &mut normalized,
+                "reviewId",
+                "reviews",
+                &["taskId", "projectId", "goalId"],
+                strict,
+            )?;
+        } else {
+            align_context_from_reference(
+                connection,
+                &mut normalized,
+                "resultId",
+                "results",
+                &["taskId", "projectId", "goalId"],
+                strict,
+            )?;
         }
     }
 
@@ -2825,6 +2912,81 @@ mod tests {
             true
         )
         .is_err());
+    }
+
+    #[test]
+    fn causal_context_is_inherited_and_conflicts_are_rejected() {
+        let connection = relationship_test_db();
+        put(&connection, "goals", "goal-1", json!({"title":"Goal 1"}));
+        put(&connection, "goals", "goal-2", json!({"title":"Goal 2"}));
+        put(
+            &connection,
+            "projects",
+            "project-1",
+            json!({"title":"Project 1","goalId":"goal-1"}),
+        );
+        put(
+            &connection,
+            "projects",
+            "project-2",
+            json!({"title":"Project 2","goalId":"goal-2"}),
+        );
+        put(
+            &connection,
+            "decisions",
+            "decision-1",
+            json!({"title":"Decision","projectId":"project-1"}),
+        );
+        let task = normalize_record(
+            &connection,
+            "tasks",
+            &json!({"title":"Task","decisionId":"decision-1"}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(task["projectId"], "project-1");
+        assert_eq!(task["goalId"], "goal-1");
+        assert!(normalize_record(
+            &connection,
+            "tasks",
+            &json!({"title":"Wrong Task","projectId":"project-2","decisionId":"decision-1"}),
+            true,
+        )
+        .is_err());
+
+        put(
+            &connection,
+            "tasks",
+            "task-1",
+            json!({"title":"Task","projectId":"project-1"}),
+        );
+        put(
+            &connection,
+            "results",
+            "result-1",
+            json!({"title":"Result","taskId":"task-1"}),
+        );
+        put(
+            &connection,
+            "reviews",
+            "review-1",
+            json!({"title":"Review","resultId":"result-1"}),
+        );
+        let review = record_by_id(&connection, "review-1").unwrap().unwrap();
+        assert_eq!(review["taskId"], "task-1");
+        assert_eq!(review["projectId"], "project-1");
+        assert_eq!(review["goalId"], "goal-1");
+
+        let insight = normalize_record(
+            &connection,
+            "insights",
+            &json!({"statement":"Insight","reviewId":"review-1"}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(insight["taskId"], "task-1");
+        assert_eq!(insight["projectId"], "project-1");
+        assert_eq!(insight["goalId"], "goal-1");
     }
 
     #[test]

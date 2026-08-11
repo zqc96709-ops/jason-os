@@ -16,10 +16,43 @@ export type TimelineProjectionItem = {
   taskId?: string
 }
 
-export const timelineEntityTypes: Entity[] = ['goals', 'projects', 'tasks', 'timeLogs', 'events', 'results', 'reviews', 'insights', 'decisions', 'timelineEvents']
+export type TimelineCausalKind = 'decision_task' | 'task_time' | 'task_result' | 'result_review' | 'review_insight' | 'insight_principle' | 'insight_mental_model'
+
+export type TimelineCausalEdge = {
+  id: string
+  kind: TimelineCausalKind
+  label: string
+  sourceId: string
+  targetId: string
+  source: RecordData
+  target: RecordData
+}
+
+export const timelineEntityTypes: Entity[] = ['goals', 'projects', 'tasks', 'timeLogs', 'events', 'results', 'reviews', 'insights', 'principles', 'mentalModels', 'decisions', 'timelineEvents']
 
 const text = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : ''
 const first = (...values: unknown[]) => values.map(text).find(Boolean) || ''
+const ids = (value: unknown) => Array.isArray(value) ? value.map(text).filter(Boolean) : String(value || '').split(',').map((item) => item.trim()).filter(Boolean)
+const contextRelationFields = ['taskId', 'resultId', 'reviewId', 'insightId', 'decisionId', 'reviewIds', 'insightIds']
+
+function timelineContextResolver(records: RecordData[], field: 'projectId' | 'goalId') {
+  const byId = new Map(records.map((record) => [record.id, record]))
+  const cache = new Map<string, string | null>()
+  const resolve = (record: RecordData, visited = new Set<string>()): string | undefined => {
+    if (cache.has(record.id)) return cache.get(record.id) || undefined
+    if (visited.has(record.id)) return undefined
+    const direct = text(record[field])
+    if (direct) { cache.set(record.id, direct); return direct }
+    if (field === 'projectId' && record.entity === 'projects') { cache.set(record.id, record.id); return record.id }
+    if (field === 'goalId' && record.entity === 'goals') { cache.set(record.id, record.id); return record.id }
+    const nextVisited = new Set(visited); nextVisited.add(record.id)
+    const candidates = [...new Set(contextRelationFields.flatMap((key) => ids(record[key])).map((id) => byId.get(id)).filter((related): related is RecordData => Boolean(related)).map((related) => resolve(related, nextVisited)).filter((value): value is string => Boolean(value)))]
+    const resolved = candidates.length === 1 ? candidates[0] : undefined
+    cache.set(record.id, resolved || null)
+    return resolved
+  }
+  return resolve
+}
 
 export function timelineOccurredAt(record: Partial<RecordData>): string {
   const explicit = text(record.occurredAt)
@@ -44,7 +77,7 @@ export function timelineTimeMeaning(record: Partial<RecordData>): TimelineTimeMe
 
 export function timelineImportance(record: Partial<RecordData>): TimelineImportance {
   if (record.timelineImportance === 'key' || record.timelineImportance === 'normal') return record.timelineImportance
-  if (['decisions', 'results', 'reviews', 'insights'].includes(String(record.entity))) return 'key'
+  if (['decisions', 'results', 'reviews', 'insights', 'principles', 'mentalModels'].includes(String(record.entity))) return 'key'
   if (record.entity === 'projects' && ['blocked', 'completed'].includes(String(record.status))) return 'key'
   if (record.entity === 'projects' && ['at_risk', 'blocked'].includes(String(record.health))) return 'key'
   if (record.entity === 'goals' && ['completed', 'paused'].includes(String(record.status))) return 'key'
@@ -59,6 +92,8 @@ export function timelineEvidenceLevel(record: Partial<RecordData>): TimelineEvid
 }
 
 export function timelineProjection(records: RecordData[]): TimelineProjectionItem[] {
+  const projectIdFor = timelineContextResolver(records, 'projectId')
+  const goalIdFor = timelineContextResolver(records, 'goalId')
   return records.filter((record) => timelineEntityTypes.includes(record.entity)).map((record) => ({
     id: record.id,
     record,
@@ -66,10 +101,68 @@ export function timelineProjection(records: RecordData[]): TimelineProjectionIte
     timeMeaning: timelineTimeMeaning(record),
     importance: timelineImportance(record),
     evidenceLevel: timelineEvidenceLevel(record),
-    goalId: text(record.goalId) || undefined,
-    projectId: text(record.projectId) || undefined,
+    goalId: goalIdFor(record),
+    projectId: projectIdFor(record),
     taskId: text(record.taskId) || undefined,
   })).sort((a, b) => timelineTimestamp(b.occurredAt) - timelineTimestamp(a.occurredAt))
+}
+
+const causalLabels: Record<TimelineCausalKind, string> = {
+  decision_task: '决策形成任务',
+  task_time: '任务的实际投入',
+  task_result: '任务产生结果',
+  result_review: '基于结果复盘',
+  review_insight: '从复盘提炼洞见',
+  insight_principle: '洞见沉淀为原则',
+  insight_mental_model: '洞见形成思维模型',
+}
+
+const causalEntities: Record<TimelineCausalKind, [Entity, Entity]> = {
+  decision_task: ['decisions', 'tasks'],
+  task_time: ['tasks', 'timeLogs'],
+  task_result: ['tasks', 'results'],
+  result_review: ['results', 'reviews'],
+  review_insight: ['reviews', 'insights'],
+  insight_principle: ['insights', 'principles'],
+  insight_mental_model: ['insights', 'mentalModels'],
+}
+
+export function timelineCausalEdges(records: RecordData[]): TimelineCausalEdge[] {
+  const byId = new Map(records.map((record) => [record.id, record]))
+  const projectIdFor = timelineContextResolver(records, 'projectId')
+  const goalIdFor = timelineContextResolver(records, 'goalId')
+  const seen = new Set<string>()
+  const edges: TimelineCausalEdge[] = []
+  const add = (sourceId: string, targetId: string, kind: TimelineCausalKind) => {
+    const source = byId.get(sourceId); const target = byId.get(targetId)
+    if (!source || !target || source.id === target.id) return
+    const [sourceEntity, targetEntity] = causalEntities[kind]
+    if (source.entity !== sourceEntity || target.entity !== targetEntity) return
+    const sourceProject = projectIdFor(source); const targetProject = projectIdFor(target)
+    if (sourceProject && targetProject && sourceProject !== targetProject) return
+    const sourceGoal = goalIdFor(source); const targetGoal = goalIdFor(target)
+    if (sourceGoal && targetGoal && sourceGoal !== targetGoal) return
+    const id = `${kind}:${sourceId}:${targetId}`
+    if (seen.has(id)) return
+    seen.add(id)
+    edges.push({ id, kind, label: causalLabels[kind], sourceId, targetId, source, target })
+  }
+  records.forEach((record) => {
+    if (record.entity === 'tasks') add(text(record.decisionId), record.id, 'decision_task')
+    if (record.entity === 'decisions') add(record.id, text(record.taskId), 'decision_task')
+    if (record.entity === 'timeLogs') add(text(record.taskId), record.id, 'task_time')
+    if (record.entity === 'results') add(text(record.taskId), record.id, 'task_result')
+    if (record.entity === 'reviews') add(text(record.resultId), record.id, 'result_review')
+    if (record.entity === 'insights') add(text(record.reviewId), record.id, 'review_insight')
+    if (record.entity === 'principles') ids(record.insightIds).forEach((insightId) => add(insightId, record.id, 'insight_principle'))
+    if (record.entity === 'mentalModels') add(text(record.insightId), record.id, 'insight_mental_model')
+  })
+  return edges
+}
+
+export function visibleTimelineCausalEdges(edges: TimelineCausalEdge[], items: TimelineProjectionItem[]) {
+  const visible = new Set(items.map((item) => item.record.id))
+  return edges.filter((edge) => visible.has(edge.sourceId) && visible.has(edge.targetId))
 }
 
 export function timelineTimestamp(value: string): number {

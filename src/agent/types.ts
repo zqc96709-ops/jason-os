@@ -17,6 +17,16 @@ export type AgentContext = {
   recentActions: Pick<RecordData, 'id' | 'entity'>[] & Record<string, unknown>[]
   localDate: string
   timeZone: string
+  analysisMode?: 'timeline_readonly'
+  timelineSummary?: {
+    mode: string
+    range: string
+    recordCount: number
+    actualCount: number
+    plannedCount: number
+    causalCount: number
+    sampledRecordCount: number
+  }
 }
 
 export type AgentAction = {

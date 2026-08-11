@@ -2150,6 +2150,10 @@ fn context_string(context: &Value, key: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+fn timeline_analysis_is_read_only(context: &Value) -> bool {
+    context.get("analysisMode").and_then(Value::as_str) == Some("timeline_readonly")
+}
+
 fn apply_agent_context(
     connection: &Connection,
     entity: &str,
@@ -2675,7 +2679,8 @@ fn ask_chief_blocking(
 7. 删除、批量修改或批量删除不要生成 Action，只说明影响并要求明确确认；当前阶段没有删除 Tool。
 8. 如果缺少真正必要字段，将 mode=chat，missingFields 列出并只问最少问题。
 9. 普通分析/搜索问题 mode=chat，依据本地记录回答；可以明确说明正在调用找到的思维模型。
-10. 不向用户暴露 JSON、Schema、数据库、SQL、内部 API 或 Tool 技术细节。"#;
+10. 不向用户暴露 JSON、Schema、数据库、SQL、内部 API 或 Tool 技术细节。
+11. 当当前页面上下文 analysisMode=timeline_readonly 时，只能进行基于证据的只读分析，mode 必须为 chat，禁止生成 Action。"#;
     let mut messages = Vec::new();
     let recent_history = history.unwrap_or_default();
     let skip = recent_history.len().saturating_sub(10);
@@ -2702,11 +2707,12 @@ fn ask_chief_blocking(
         .trim()
         .to_string();
     let mut action: Option<Value> = None;
-    if parsed
-        .as_ref()
-        .and_then(|value| value.get("mode"))
-        .and_then(Value::as_str)
-        == Some("action")
+    if !timeline_analysis_is_read_only(&page_context)
+        && parsed
+            .as_ref()
+            .and_then(|value| value.get("mode"))
+            .and_then(Value::as_str)
+            == Some("action")
     {
         let plan = parsed.as_ref().unwrap();
         match create_agent_action(app.clone(), plan, &page_context) {
@@ -2987,6 +2993,16 @@ mod tests {
         assert_eq!(insight["taskId"], "task-1");
         assert_eq!(insight["projectId"], "project-1");
         assert_eq!(insight["goalId"], "goal-1");
+    }
+
+    #[test]
+    fn timeline_analysis_mode_is_read_only() {
+        assert!(timeline_analysis_is_read_only(
+            &json!({"analysisMode":"timeline_readonly"})
+        ));
+        assert!(!timeline_analysis_is_read_only(
+            &json!({"currentRoute":"timeline"})
+        ));
     }
 
     #[test]

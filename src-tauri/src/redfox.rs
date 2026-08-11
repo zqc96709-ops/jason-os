@@ -79,8 +79,8 @@ pub fn platform_for_url(url: &str) -> Option<&'static str> {
 pub fn request_for_url(url: &str) -> Result<(&'static str, Value), String> {
     match platform_for_url(url) {
         Some("wechat") => Ok((
-            "https://redfox.work/story/api/gzhData/queryArticleDetail",
-            json!({"workUrl": url}),
+            "https://redfox.hk/story/api/gzhData/queryArticleDetail",
+            json!({"url": url}),
         )),
         Some("douyin") => {
             let work_id = extract_between(url, &["/video/", "modal_id="]);
@@ -88,7 +88,7 @@ pub fn request_for_url(url: &str) -> Result<(&'static str, Value), String> {
                 return Err("无法从抖音链接提取作品 ID，请使用作品完整链接".into());
             }
             Ok((
-                "https://redfox.work/story/api/douyinData/queryWorkDetail",
+                "https://redfox.hk/story/api/dyData/queryWork",
                 json!({"workId": work_id}),
             ))
         }
@@ -98,7 +98,7 @@ pub fn request_for_url(url: &str) -> Result<(&'static str, Value), String> {
                 return Err("无法从小红书链接提取笔记 ID，请使用笔记完整链接".into());
             }
             Ok((
-                "https://redfox.work/story/api/xhsUser/queryWorkDetail",
+                "https://redfox.hk/story/api/xhsUser/queryWorkDetail",
                 json!({"workId": work_id}),
             ))
         }
@@ -120,16 +120,50 @@ pub fn normalize_response(url: &str, endpoint: &str, raw: &Value) -> Value {
         "VIDEO_POST"
     };
     let title = find_text(raw, &["title", "workTitle", "noteTitle", "shareTitle"]);
-    let content = find_text(raw, &["content", "desc", "description", "noteText", "text"]);
+    let content = find_text(
+        raw,
+        &[
+            "content",
+            "workDesc",
+            "desc",
+            "description",
+            "noteText",
+            "text",
+        ],
+    );
     let author = find_text(
         raw,
-        &["author", "authorName", "nickname", "nickName", "userName"],
+        &[
+            "author",
+            "authorName",
+            "accountName",
+            "accountNickname",
+            "nickname",
+            "nickName",
+            "userName",
+        ],
     );
-    let author_id = find_text(raw, &["authorId", "userId", "secUid", "uid"]);
+    let author_id = find_text(
+        raw,
+        &[
+            "authorId",
+            "accountId",
+            "accountUserid",
+            "userId",
+            "secUid",
+            "uid",
+        ],
+    );
     let external_id = find_text(raw, &["workId", "noteId", "awemeId", "articleId", "id"]);
     let published_at = find_text(
         raw,
-        &["publishedAt", "publishTime", "createTime", "uploadTime"],
+        &[
+            "publishedAt",
+            "publishTime",
+            "workPublishTime",
+            "createTime",
+            "uploadTime",
+        ],
     );
     let canonical_url = {
         let value = find_text(raw, &["workUrl", "url", "shareUrl", "webpageUrl"]);
@@ -154,11 +188,17 @@ pub fn normalize_response(url: &str, endpoint: &str, raw: &Value) -> Value {
         "coverUrl": cover_url,
         "mediaUrls": [],
         "metrics": {
-            "views": find_i64(raw, &["viewCount", "playCount", "views", "readCount"]),
-            "likes": find_i64(raw, &["likeCount", "diggCount", "likes"]),
-            "comments": find_i64(raw, &["commentCount", "comments"]),
-            "shares": find_i64(raw, &["shareCount", "repostCount", "shares"]),
-            "saves": find_i64(raw, &["collectCount", "favoriteCount", "saves"]),
+            "views": find_i64(raw, &[
+                "viewCount",
+                "playCount",
+                "workReadedCount",
+                "views",
+                "readCount",
+            ]),
+            "likes": find_i64(raw, &["likeCount", "workLikedCount", "diggCount", "likes"]),
+            "comments": find_i64(raw, &["commentCount", "workCommentsCount", "comments"]),
+            "shares": find_i64(raw, &["shareCount", "workSharedCount", "repostCount", "shares"]),
+            "saves": find_i64(raw, &["collectCount", "workCollectedCount", "favoriteCount", "saves"]),
             "followers": find_i64(raw, &["fansCount", "followerCount", "followers"])
         },
         "provider": "redfox",
@@ -187,7 +227,7 @@ pub fn capture(api_key: &str, url: &str) -> Result<RedfoxCapture, String> {
         return Err(format!("RedFox HTTP {status_code}"));
     }
     let code = raw.get("code").and_then(Value::as_i64).unwrap_or(200);
-    if ![0, 200].contains(&code) {
+    if ![0, 200, 2000].contains(&code) {
         let message = find_text(&raw, &["message", "msg", "error"]);
         return Err(format!(
             "RedFox {code}：{}",
@@ -212,32 +252,32 @@ mod tests {
 
     #[test]
     fn routes_supported_platform_urls() {
-        assert!(request_for_url("https://mp.weixin.qq.com/s/abc")
-            .unwrap()
-            .0
-            .contains("gzhData"));
+        let wechat = request_for_url("https://mp.weixin.qq.com/s/abc").unwrap();
         assert_eq!(
-            request_for_url("https://www.douyin.com/video/123456")
-                .unwrap()
-                .1["workId"],
-            "123456"
+            wechat.0,
+            "https://redfox.hk/story/api/gzhData/queryArticleDetail"
         );
+        assert_eq!(wechat.1["url"], "https://mp.weixin.qq.com/s/abc");
+        let douyin = request_for_url("https://www.douyin.com/video/123456").unwrap();
+        assert_eq!(douyin.0, "https://redfox.hk/story/api/dyData/queryWork");
+        assert_eq!(douyin.1["workId"], "123456");
+        let xiaohongshu = request_for_url("https://www.xiaohongshu.com/explore/abc123").unwrap();
         assert_eq!(
-            request_for_url("https://www.xiaohongshu.com/explore/abc123")
-                .unwrap()
-                .1["workId"],
-            "abc123"
+            xiaohongshu.0,
+            "https://redfox.hk/story/api/xhsUser/queryWorkDetail"
         );
+        assert_eq!(xiaohongshu.1["workId"], "abc123");
         assert!(request_for_url("https://reddit.com/r/test").is_err());
     }
 
     #[test]
     fn normalizes_provider_specific_fields() {
-        let raw = json!({"code":200,"data":{"workId":"123","desc":"低噪音宠物饮水器","nickname":"Jason","playCount":"1200","diggCount":88,"commentCount":12,"shareCount":4}});
+        let raw = json!({"code":2000,"data":{"workId":"123","title":"低噪音宠物饮水器","content":"真实内容","accountName":"Jason","likeCount":88,"commentCount":12,"shareCount":4,"collectCount":6}});
         let canonical = normalize_response("https://www.douyin.com/video/123", "endpoint", &raw);
         assert_eq!(canonical["externalId"], "123");
-        assert_eq!(canonical["content"], "低噪音宠物饮水器");
-        assert_eq!(canonical["metrics"]["views"], 1200);
+        assert_eq!(canonical["content"], "真实内容");
+        assert_eq!(canonical["author"], "Jason");
+        assert_eq!(canonical["metrics"]["saves"], 6);
         assert_eq!(canonical["metrics"]["likes"], 88);
     }
 }

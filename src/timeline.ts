@@ -16,7 +16,7 @@ export type TimelineProjectionItem = {
   taskId?: string
 }
 
-export type TimelineCausalKind = 'decision_task' | 'task_time' | 'task_result' | 'result_review' | 'review_insight' | 'insight_principle' | 'insight_mental_model'
+export type TimelineCausalKind = 'signal_opportunity' | 'opportunity_decision' | 'decision_project' | 'decision_task' | 'task_time' | 'task_result' | 'result_review' | 'review_insight' | 'insight_principle' | 'insight_mental_model'
 
 export type TimelineCausalEdge = {
   id: string
@@ -28,12 +28,12 @@ export type TimelineCausalEdge = {
   target: RecordData
 }
 
-export const timelineEntityTypes: Entity[] = ['goals', 'projects', 'tasks', 'timeLogs', 'events', 'results', 'reviews', 'insights', 'principles', 'mentalModels', 'decisions', 'timelineEvents']
+export const timelineEntityTypes: Entity[] = ['goals', 'projects', 'tasks', 'timeLogs', 'events', 'results', 'reviews', 'insights', 'principles', 'mentalModels', 'decisions', 'signals', 'opportunities', 'intelligenceBriefs', 'timelineEvents']
 
 const text = (value: unknown) => typeof value === 'string' && value.trim() ? value.trim() : ''
 const first = (...values: unknown[]) => values.map(text).find(Boolean) || ''
 const ids = (value: unknown) => Array.isArray(value) ? value.map(text).filter(Boolean) : String(value || '').split(',').map((item) => item.trim()).filter(Boolean)
-const contextRelationFields = ['taskId', 'resultId', 'reviewId', 'insightId', 'decisionId', 'reviewIds', 'insightIds']
+const contextRelationFields = ['taskId', 'resultId', 'reviewId', 'insightId', 'decisionId', 'opportunityId', 'sourceDecisionId', 'sourceOpportunityId', 'signalIds', 'sourceSignalIds', 'reviewIds', 'insightIds']
 
 function timelineContextResolver(records: RecordData[], field: 'projectId' | 'goalId') {
   const byId = new Map(records.map((record) => [record.id, record]))
@@ -60,6 +60,8 @@ export function timelineOccurredAt(record: Partial<RecordData>): string {
   if (record.entity === 'timeLogs' || record.entity === 'events') return first(record.startAt, record.createdAt)
   if (record.entity === 'decisions') return first(record.date, record.decisionDate, record.createdAt)
   if (record.entity === 'results') return first(record.date, record.completedAt, record.createdAt)
+  if (record.entity === 'signals') return first(record.detectedAt, record.createdAt)
+  if (record.entity === 'intelligenceBriefs') return first(record.generatedAt, record.createdAt)
   if (record.entity === 'tasks') {
     if (record.status === 'completed') return first(record.completedAt, record.createdAt)
     return first(record.dueAt, record.dueDate, record.createdAt)
@@ -77,7 +79,7 @@ export function timelineTimeMeaning(record: Partial<RecordData>): TimelineTimeMe
 
 export function timelineImportance(record: Partial<RecordData>): TimelineImportance {
   if (record.timelineImportance === 'key' || record.timelineImportance === 'normal') return record.timelineImportance
-  if (['decisions', 'results', 'reviews', 'insights', 'principles', 'mentalModels'].includes(String(record.entity))) return 'key'
+  if (['decisions', 'results', 'reviews', 'insights', 'principles', 'mentalModels', 'signals', 'opportunities', 'intelligenceBriefs'].includes(String(record.entity))) return 'key'
   if (record.entity === 'projects' && ['blocked', 'completed'].includes(String(record.status))) return 'key'
   if (record.entity === 'projects' && ['at_risk', 'blocked'].includes(String(record.health))) return 'key'
   if (record.entity === 'goals' && ['completed', 'paused'].includes(String(record.status))) return 'key'
@@ -108,6 +110,9 @@ export function timelineProjection(records: RecordData[]): TimelineProjectionIte
 }
 
 const causalLabels: Record<TimelineCausalKind, string> = {
+  signal_opportunity: '信号形成机会',
+  opportunity_decision: '机会进入决策',
+  decision_project: '决策形成项目',
   decision_task: '决策形成任务',
   task_time: '任务的实际投入',
   task_result: '任务产生结果',
@@ -118,6 +123,9 @@ const causalLabels: Record<TimelineCausalKind, string> = {
 }
 
 const causalEntities: Record<TimelineCausalKind, [Entity, Entity]> = {
+  signal_opportunity: ['signals', 'opportunities'],
+  opportunity_decision: ['opportunities', 'decisions'],
+  decision_project: ['decisions', 'projects'],
   decision_task: ['decisions', 'tasks'],
   task_time: ['tasks', 'timeLogs'],
   task_result: ['tasks', 'results'],
@@ -148,6 +156,9 @@ export function timelineCausalEdges(records: RecordData[]): TimelineCausalEdge[]
     edges.push({ id, kind, label: causalLabels[kind], sourceId, targetId, source, target })
   }
   records.forEach((record) => {
+    if (record.entity === 'opportunities') ids(record.signalIds).forEach((signalId) => add(signalId, record.id, 'signal_opportunity'))
+    if (record.entity === 'decisions') add(text(record.opportunityId), record.id, 'opportunity_decision')
+    if (record.entity === 'projects') add(text(record.sourceDecisionId), record.id, 'decision_project')
     if (record.entity === 'tasks') add(text(record.decisionId), record.id, 'decision_task')
     if (record.entity === 'decisions') add(record.id, text(record.taskId), 'decision_task')
     if (record.entity === 'timeLogs') add(text(record.taskId), record.id, 'task_time')

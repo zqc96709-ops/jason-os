@@ -26,6 +26,9 @@ export const toolRegistry: ToolDefinition[] = [
   tool('startTimer', '开始与当前任务、项目或目标关联的计时', 'timeLogs', 'START_TIMER', 'LOW_WRITE', true), tool('stopTimer', '停止当前计时并生成时间记录', 'timeLogs', 'STOP_TIMER', 'MEDIUM_WRITE', true), tool('createTimeRecord', '创建时间记录', 'timeLogs', 'CREATE', 'LOW_WRITE', true), tool('getTimeRecords', '读取时间记录', 'timeLogs', 'READ', 'READ', false),
   tool('createDecision', '创建结构化决策', 'decisions', 'CREATE', 'MEDIUM_WRITE', true), tool('getDecision', '读取决策', 'decisions', 'READ', 'READ', false), tool('searchDecisions', '搜索决策', 'decisions', 'READ', 'READ', false), tool('updateDecision', '更新决策', 'decisions', 'UPDATE', 'MEDIUM_WRITE', true),
   tool('createReview', '创建复盘', 'reviews', 'CREATE', 'LOW_WRITE', true), tool('getReview', '读取复盘', 'reviews', 'READ', 'READ', false), tool('createInsight', '创建洞见', 'insights', 'CREATE', 'LOW_WRITE', true), tool('createPrinciple', '创建原则', 'principles', 'CREATE', 'LOW_WRITE', true), tool('searchPrinciples', '搜索原则', 'principles', 'READ', 'READ', false),
+  tool('createExternalSource', '创建外部情报监控源', 'externalSources', 'CREATE', 'MEDIUM_WRITE', true), tool('getExternalSources', '读取情报源与同步状态', 'externalSources', 'READ', 'READ', false), tool('updateExternalSource', '更新或暂停情报源', 'externalSources', 'UPDATE', 'MEDIUM_WRITE', true),
+  tool('getExternalBriefing', '读取有证据的 CEO 外部情报简报', 'intelligenceBriefs', 'READ', 'READ', false), tool('getExternalSignals', '读取外部信号及证据口径', 'signals', 'READ', 'READ', false), tool('updateExternalSignal', '观察、忽略或验证外部信号', 'signals', 'UPDATE', 'MEDIUM_WRITE', true),
+  tool('createOpportunity', '把已确认信号转为机会草稿', 'opportunities', 'CREATE', 'LOW_WRITE', true), tool('getOpportunities', '读取机会与数据缺口', 'opportunities', 'READ', 'READ', false), tool('updateOpportunity', '更新机会评估', 'opportunities', 'UPDATE', 'MEDIUM_WRITE', true),
 ]
 
 export const toolFor = (name: string) => toolRegistry.find((item) => item.name === name)

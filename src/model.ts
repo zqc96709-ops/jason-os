@@ -3,6 +3,7 @@ export type Entity =
   | 'goals' | 'keyResults' | 'projects' | 'tasks' | 'hypotheses' | 'experiments' | 'timeLogs' | 'results'
   | 'reviews' | 'knowledge' | 'insights' | 'principles' | 'mentalModels' | 'mentalModelUsages'
   | 'decisions' | 'inbox' | 'events' | 'people' | 'dataRecords' | 'attachments' | 'timelineEvents' | 'agentRuns' | 'agentActions'
+  | 'externalSources' | 'signals' | 'opportunities' | 'intelligenceBriefs'
 
 export type RecordData = Record<string, unknown> & {
   id: string
@@ -64,6 +65,7 @@ export const entities: EntityConfig[] = [
     { key: 'progress', label: '进度（%）', type: 'number' }, { key: 'priority', label: '优先级', type: 'select', options: priorities },
     { key: 'startDate', label: '开始日期', type: 'date' }, { key: 'targetDate', label: '目标日期', type: 'date' },
     { key: 'blockers', label: '阻塞', multiline: true }, { key: 'nextAction', label: '下一步行动', multiline: true },
+    { key: 'sourceDecisionId', label: '来源决策', relation: 'decisions' }, { key: 'sourceOpportunityId', label: '来源机会', relation: 'opportunities' }, { key: 'sourceSignalIds', label: '来源信号', relation: 'signals', multiple: true },
   ] },
   { entity: 'tasks', label: '任务', singular: '任务', icon: '□', titleKey: 'title', description: '任务是可以立即执行的下一步行动。', fields: [
     { key: 'title', label: '任务' }, { key: 'description', label: '说明', multiline: true }, { key: 'decisionId', label: '来源决策', relation: 'decisions' }, { key: 'projectId', label: '所属项目', relation: 'projects' },
@@ -140,7 +142,34 @@ export const entities: EntityConfig[] = [
     { key: 'date', label: '决策日期', type: 'date' }, { key: 'status', label: '状态', type: 'select', options: statuses.decision }, { key: 'outcome', label: '实际结果', multiline: true },
     { key: 'taskId', label: '任务', relation: 'tasks' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'goalId', label: '目标', relation: 'goals' },
     { key: 'knowledgeId', label: '知识', relation: 'knowledge' }, { key: 'insightId', label: '洞见', relation: 'insights' }, { key: 'resultId', label: '结果', relation: 'results' }, { key: 'reviewId', label: '复盘', relation: 'reviews' },
+    { key: 'signalIds', label: '来源信号', relation: 'signals', multiple: true }, { key: 'opportunityId', label: '来源机会', relation: 'opportunities' },
     { key: 'principleIds', label: '调用原则', relation: 'principles', multiple: true }, { key: 'mentalModelIds', label: '调用思维模型', relation: 'mentalModels', multiple: true },
+  ] },
+  { entity: 'externalSources', label: '情报源', singular: '情报源', icon: '◉', titleKey: 'name', description: '定义 Jason OS 应持续观察的关键词、账号、竞品和主题。', fields: [
+    { key: 'name', label: '名称' }, { key: 'type', label: '类型', type: 'select', options: [option('LINK', '固定链接'), option('KEYWORD', '关键词'), option('ACCOUNT', '账号'), option('COMPETITOR', '竞品'), option('MARKET', '市场'), option('TOPIC', '主题')] },
+    { key: 'platform', label: '平台', type: 'select', options: ['微信公众号', '抖音', '小红书'] }, { key: 'query', label: '关键词 / 账号' }, { key: 'url', label: '公开链接' },
+    { key: 'status', label: '状态', type: 'select', options: [option('active', '启用'), option('paused', '暂停'), option('unsupported', '接口待接入')] }, { key: 'pollInterval', label: '同步频率', type: 'select', options: [option('manual', '仅手动'), option('daily', '应用打开时每日一次')] },
+    { key: 'providerPreference', label: '采集服务', type: 'select', options: [option('auto', '自动选择'), option('redfox', 'RedFoxHub')] }, { key: 'lastPolledAt', label: '最近同步', type: 'datetime-local' },
+    { key: 'goalId', label: '目标', relation: 'goals' }, { key: 'projectId', label: '项目', relation: 'projects' },
+  ] },
+  { entity: 'signals', label: '外部信号', singular: '外部信号', icon: '⌁', titleKey: 'title', description: '由可追溯的外部变化形成，等待观察、验证或进入决策。', fields: [
+    { key: 'title', label: '信号' }, { key: 'type', label: '类型', type: 'select', options: ['GROWTH', 'VIRAL', 'COMPETITOR_ACTIVITY', 'DEMAND', 'RISK'] }, { key: 'summary', label: '摘要', multiline: true },
+    { key: 'status', label: '状态', type: 'select', options: [option('DETECTED', '已发现'), option('WATCHING', '观察中'), option('VALIDATED', '已验证'), option('DISMISSED', '已忽略'), option('EXPIRED', '已过期'), option('CONVERTED', '已转化')] },
+    { key: 'platform', label: '平台' }, { key: 'topic', label: '主题' }, { key: 'baselineValue', label: '基线值' }, { key: 'currentValue', label: '当前值' }, { key: 'changeRate', label: '变化率' },
+    { key: 'baselineStart', label: '基线开始', type: 'date' }, { key: 'baselineEnd', label: '基线结束', type: 'date' }, { key: 'currentStart', label: '当前开始', type: 'date' }, { key: 'currentEnd', label: '当前结束', type: 'date' },
+    { key: 'sampleSize', label: '样本量' }, { key: 'independentAuthorCount', label: '独立作者' }, { key: 'calculationMethod', label: '计算口径', multiline: true }, { key: 'evidenceItemIds', label: '证据内容 ID', multiple: true },
+    { key: 'detectedAt', label: '发现时间', type: 'datetime-local' }, { key: 'expiresAt', label: '过期时间', type: 'datetime-local' }, { key: 'goalId', label: '目标', relation: 'goals' }, { key: 'projectId', label: '项目', relation: 'projects' },
+    { key: 'opportunityId', label: '机会', relation: 'opportunities' }, { key: 'decisionId', label: '决策', relation: 'decisions' },
+  ] },
+  { entity: 'opportunities', label: '机会', singular: '机会', icon: '◇', titleKey: 'title', description: '由已确认的信号形成，进入 CEO 判断而不是自动立项。', fields: [
+    { key: 'title', label: '机会名称' }, { key: 'problem', label: '要解决的问题', multiline: true }, { key: 'hypothesis', label: '机会假设', multiline: true }, { key: 'market', label: '市场' }, { key: 'category', label: '分类' },
+    { key: 'status', label: '状态', type: 'select', options: [option('draft', '草稿'), option('evaluating', '评估中'), option('decided', '已决策'), option('dismissed', '已放弃')] },
+    { key: 'signalIds', label: '来源信号', relation: 'signals', multiple: true }, { key: 'evidence', label: '证据', multiline: true }, { key: 'dataGaps', label: '数据缺口', multiline: true },
+    { key: 'demandEvidence', label: '需求证据', multiline: true }, { key: 'growthEvidence', label: '增长证据', multiline: true }, { key: 'competitionEvidence', label: '竞争证据', multiline: true }, { key: 'contentEvidence', label: '内容证据', multiline: true }, { key: 'marginEvidence', label: '利润证据', multiline: true }, { key: 'strategicFit', label: '战略适配', multiline: true },
+    { key: 'decisionId', label: '决策', relation: 'decisions' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'goalId', label: '目标', relation: 'goals' }, { key: 'resultId', label: '结果', relation: 'results' },
+  ] },
+  { entity: 'intelligenceBriefs', label: '情报简报', singular: '情报简报', icon: '✺', titleKey: 'title', description: '把少量重要信号、机会和风险整理成 CEO 可以快速阅读的简报。', fields: [
+    { key: 'title', label: '简报标题' }, { key: 'periodStart', label: '周期开始', type: 'date' }, { key: 'periodEnd', label: '周期结束', type: 'date' }, { key: 'signalIds', label: '信号', relation: 'signals', multiple: true }, { key: 'opportunityIds', label: '机会', relation: 'opportunities', multiple: true }, { key: 'riskSignalIds', label: '风险信号', relation: 'signals', multiple: true }, { key: 'summary', label: '摘要', multiline: true }, { key: 'dataGaps', label: '数据缺口', multiline: true }, { key: 'generatedAt', label: '生成时间', type: 'datetime-local' }, { key: 'status', label: '状态', type: 'select', options: [option('draft', '草稿'), option('published', '已确认')] },
   ] },
   { entity: 'inbox', label: '收集箱', singular: '收集', icon: '↓', titleKey: 'content', description: '先记录事实，稍后再分类。', fields: [
     { key: 'content', label: '内容或链接', multiline: true, placeholder: '粘贴微信公众号、抖音、小红书、X、Instagram、Reddit、Facebook 等公开链接' }, { key: 'type', label: '建议类型' }, { key: 'status', label: '状态', type: 'select', options: [option('unprocessed', '待处理'), option('processed', '已处理'), option('archived', '已归档')] },

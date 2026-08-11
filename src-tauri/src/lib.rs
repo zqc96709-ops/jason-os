@@ -1,3 +1,6 @@
+mod external_intelligence;
+mod redfox;
+
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
@@ -39,6 +42,10 @@ const ENTITIES: &[&str] = &[
     "timelineEvents",
     "agentRuns",
     "agentActions",
+    "externalSources",
+    "signals",
+    "opportunities",
+    "intelligenceBriefs",
 ];
 
 fn now() -> String {
@@ -67,6 +74,7 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     fs::create_dir_all(dir.join("attachments")).map_err(|e| e.to_string())?;
     fs::create_dir_all(dir.join("exports")).map_err(|e| e.to_string())?;
     fs::create_dir_all(dir.join("backups")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(dir.join("external-intelligence/raw")).map_err(|e| e.to_string())?;
     Ok(dir)
 }
 
@@ -80,6 +88,9 @@ const TIMELINE_SOURCE_ENTITIES: &[&str] = &[
     "reviews",
     "insights",
     "decisions",
+    "signals",
+    "opportunities",
+    "intelligenceBriefs",
     "timelineEvents",
 ];
 
@@ -120,6 +131,14 @@ fn timeline_semantics(
                 .unwrap_or_else(|| created_at.into()),
             "actual",
         ),
+        "signals" => (
+            first_timeline_value(data, &["detectedAt"]).unwrap_or_else(|| created_at.into()),
+            "recorded",
+        ),
+        "intelligenceBriefs" => (
+            first_timeline_value(data, &["generatedAt"]).unwrap_or_else(|| created_at.into()),
+            "recorded",
+        ),
         "tasks" if data.get("status").and_then(Value::as_str) == Some("completed") => (
             first_timeline_value(data, &["completedAt"]).unwrap_or_else(|| updated_at.into()),
             "actual",
@@ -157,7 +176,17 @@ fn timeline_importance(entity: &str, data: &Value) -> &'static str {
     if data.get("timelineImportance").and_then(Value::as_str) == Some("key") {
         return "key";
     }
-    if ["decisions", "results", "reviews", "insights"].contains(&entity) {
+    if [
+        "decisions",
+        "results",
+        "reviews",
+        "insights",
+        "signals",
+        "opportunities",
+        "intelligenceBriefs",
+    ]
+    .contains(&entity)
+    {
         return "key";
     }
     if entity == "projects"
@@ -295,6 +324,18 @@ fn timeline_change_specs(entity: &str, before: &Value, after: &Value) -> Vec<Val
             "status",
             "decision_status_changed",
             "决策状态发生变化",
+            "key",
+        ),
+        "signals" => add(
+            "status",
+            "signal_status_changed",
+            "外部信号状态发生变化",
+            "key",
+        ),
+        "opportunities" => add(
+            "status",
+            "opportunity_status_changed",
+            "机会状态发生变化",
             "key",
         ),
         _ => {}
@@ -524,6 +565,7 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
             )
             .map_err(|error| error.to_string())?;
     }
+    external_intelligence::migrate(&connection, &now())?;
     Ok(connection)
 }
 
@@ -670,6 +712,13 @@ fn expected_entity(key: &str) -> Option<&'static str> {
         "hypothesisId" => Some("hypotheses"),
         "experimentId" => Some("experiments"),
         "personId" => Some("people"),
+        "sourceId" => Some("externalSources"),
+        "signalId" => Some("signals"),
+        "opportunityId" => Some("opportunities"),
+        "briefId" => Some("intelligenceBriefs"),
+        "sourceDecisionId" => Some("decisions"),
+        "sourceOpportunityId" => Some("opportunities"),
+        "sourceSignalId" => Some("signals"),
         _ => None,
     }
 }
@@ -1070,6 +1119,7 @@ fn save_record(app: AppHandle, entity: String, data: Value) -> Result<Value, Str
         .unwrap_or_else(|| new_id(&entity));
     let connection = db(&app)?;
     let existing = record_by_id(&connection, &id)?;
+    ensure_external_source_capacity(&connection, &entity, &id, &data)?;
     let created_at = existing
         .as_ref()
         .and_then(|record| record.get("createdAt"))
@@ -1516,6 +1566,141 @@ fn provider_models(provider: &str) -> &'static [&'static str] {
     }
 }
 
+fn ensure_external_source_capacity(
+    connection: &Connection,
+    entity: &str,
+    id: &str,
+    data: &Value,
+) -> Result<(), String> {
+    if entity != "externalSources"
+        || data
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("active")
+            != "active"
+    {
+        return Ok(());
+    }
+    let active_sources: i64 = connection
+        .query_row(
+            "SELECT COUNT(*) FROM records WHERE entity='externalSources' AND id<>?1 AND archived_at IS NULL AND deleted_at IS NULL AND COALESCE(json_extract(data_json,'$.status'),'active')='active'",
+            params![id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if active_sources >= 20 {
+        return Err("第一版最多启用 20 个情报源；请先暂停不需要的 Source".into());
+    }
+    Ok(())
+}
+
+fn capture_provider_config(configured: bool) -> Value {
+    json!({
+        "providers": [{
+            "id":"redfox", "label":"RedFoxHub", "configured":configured,
+            "supportedPlatforms":["微信公众号","抖音","小红书"],
+            "automaticSync":false, "mediaDownload":false
+        }]
+    })
+}
+
+fn redfox_key() -> Result<String, String> {
+    if let Ok(value) = std::env::var("REDFOX_API_KEY") {
+        if !value.trim().is_empty() {
+            return Ok(value);
+        }
+    }
+    read_secrets()?
+        .get("redfox")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .ok_or("尚未配置 RedFox API Key".to_string())
+}
+
+fn timestamp_after_days(value: &str, days: i64) -> String {
+    let base = value.parse::<i64>().unwrap_or_default();
+    (base + days * 86_400_000).to_string()
+}
+
+fn existing_inbox_capture(
+    connection: &Connection,
+    source_url: &str,
+    canonical_url: &str,
+) -> Result<Option<Value>, String> {
+    connection.query_row(
+        "SELECT id,entity,data_json,created_at,updated_at FROM records WHERE entity='inbox' AND archived_at IS NULL AND deleted_at IS NULL AND (json_extract(data_json,'$.sourceUrl')=?1 OR json_extract(data_json,'$.canonicalUrl')=?2) LIMIT 1",
+        params![source_url, canonical_url],
+        |row| Ok(value_to_record(row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    ).optional().map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn get_capture_provider_config() -> Result<Value, String> {
+    Ok(capture_provider_config(redfox_key().is_ok()))
+}
+
+#[tauri::command]
+fn configure_capture_provider(provider: String, api_key: String) -> Result<Value, String> {
+    if provider != "redfox" {
+        return Err("当前只支持配置 RedFoxHub".into());
+    }
+    if !api_key.trim().is_empty() {
+        store_provider_key("redfox", api_key.trim())?;
+    } else if redfox_key().is_err() {
+        return Err("请输入 RedFox API Key".into());
+    }
+    get_capture_provider_config()
+}
+
+#[tauri::command]
+async fn test_capture_provider(provider: String, url: String) -> Result<Value, String> {
+    if provider != "redfox" {
+        return Err("当前只支持测试 RedFoxHub".into());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let started = Instant::now();
+        let capture = redfox::capture(&redfox_key()?, url.trim())?;
+        Ok(json!({"ok":true,"provider":"redfox","latencyMs":started.elapsed().as_millis(),"content":capture.canonical}))
+    }).await.map_err(|error| format!("采集服务后台任务失败：{error}"))?
+}
+
+#[tauri::command]
+fn list_external_items(app: AppHandle, limit: Option<i64>) -> Result<Vec<Value>, String> {
+    external_intelligence::list_items(&db(&app)?, limit.unwrap_or(80))
+}
+
+#[tauri::command]
+fn cleanup_external_cache(app: AppHandle) -> Result<Value, String> {
+    let connection = db(&app)?;
+    let current = now();
+    let raw_dir = data_dir(&app)?
+        .join("external-intelligence/raw")
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let paths = {
+        let mut statement = connection.prepare("SELECT raw_payload_path FROM external_items WHERE expires_at IS NOT NULL AND CAST(expires_at AS INTEGER) < CAST(?1 AS INTEGER) AND raw_payload_path IS NOT NULL").map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![current], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?;
+        rows.filter_map(Result::ok).collect::<Vec<_>>()
+    };
+    let removed = external_intelligence::cleanup_expired(&connection, &current)?;
+    let mut raw_removed = 0;
+    for value in paths {
+        let path = PathBuf::from(value);
+        if path
+            .canonicalize()
+            .ok()
+            .is_some_and(|canonical| canonical.starts_with(&raw_dir))
+            && fs::remove_file(path).is_ok()
+        {
+            raw_removed += 1;
+        }
+    }
+    Ok(json!({"ok":true,"removed":removed,"rawRemoved":raw_removed}))
+}
+
 fn capture_platform(url: &str) -> &'static str {
     let lower = url.to_lowercase();
     if lower.contains("mp.weixin.qq.com") {
@@ -1649,26 +1834,135 @@ fn capture_link_blocking(app: AppHandle, url: String) -> Result<Value, String> {
         return Err("请输入有效的 http/https 链接".into());
     }
     let platform = capture_platform(&url);
+    let capture_id = new_id("capture");
+    let captured_at = now();
     let mut errors = Vec::new();
-    let (metadata, method) = match run_yt_dlp(&url) {
-        Ok(value) => (value, "yt-dlp"),
-        Err(error) => {
-            errors.push(format!("yt-dlp: {error}"));
-            match run_gallery_dl(&url) {
-                Ok(value) => (value, "gallery-dl"),
-                Err(error) => {
-                    errors.push(format!("gallery-dl: {error}"));
-                    match fetch_web_metadata(&url) {
-                        Ok(value) => (value, "open-graph"),
-                        Err(error) => {
-                            errors.push(format!("网页读取: {error}"));
-                            (json!({"webpage_url":url}), "link-only")
+    let mut external_item_id = String::new();
+    let mut capture_provider = "local".to_string();
+    let mut local_metadata_path = String::new();
+    let redfox_result = if redfox::platform_for_url(&url).is_some() {
+        match redfox_key() {
+            Ok(key) => {
+                let endpoint = redfox::request_for_url(&url)
+                    .ok()
+                    .map(|value| value.0.to_string())
+                    .unwrap_or_default();
+                match redfox::capture(&key, &url) {
+                    Ok(capture) => {
+                        let directory = data_dir(&app)?.join("external-intelligence/raw");
+                        let raw_path = directory.join(format!("{capture_id}.json"));
+                        fs::write(
+                            &raw_path,
+                            serde_json::to_vec_pretty(&capture.raw)
+                                .map_err(|error| error.to_string())?,
+                        )
+                        .map_err(|error| error.to_string())?;
+                        let connection = db(&app)?;
+                        external_item_id = external_intelligence::upsert_item(
+                            &connection,
+                            &new_id("external-item"),
+                            &capture.canonical,
+                            &captured_at,
+                            &timestamp_after_days(&captured_at, 30),
+                            &raw_path.to_string_lossy(),
+                        )?;
+                        external_intelligence::record_provider_call(
+                            &connection,
+                            &new_id("provider-call"),
+                            "redfox",
+                            &capture.endpoint,
+                            None,
+                            &captured_at,
+                            true,
+                            Some(capture.status_code),
+                            1,
+                            None,
+                        )?;
+                        local_metadata_path = raw_path.to_string_lossy().to_string();
+                        capture_provider = "redfox".into();
+                        Some(capture.canonical)
+                    }
+                    Err(error) => {
+                        if !endpoint.is_empty() {
+                            let connection = db(&app)?;
+                            external_intelligence::record_provider_call(
+                                &connection,
+                                &new_id("provider-call"),
+                                "redfox",
+                                &endpoint,
+                                None,
+                                &captured_at,
+                                false,
+                                None,
+                                0,
+                                Some(&error),
+                            )?;
+                        }
+                        errors.push(format!("RedFox: {error}"));
+                        None
+                    }
+                }
+            }
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+    let (metadata, method) = if let Some(value) = redfox_result {
+        (value, "redfox")
+    } else {
+        match run_yt_dlp(&url) {
+            Ok(value) => (value, "yt-dlp"),
+            Err(error) => {
+                errors.push(format!("yt-dlp: {error}"));
+                match run_gallery_dl(&url) {
+                    Ok(value) => (value, "gallery-dl"),
+                    Err(error) => {
+                        errors.push(format!("gallery-dl: {error}"));
+                        match fetch_web_metadata(&url) {
+                            Ok(value) => (value, "open-graph"),
+                            Err(error) => {
+                                errors.push(format!("网页读取: {error}"));
+                                (json!({"webpage_url":url}), "link-only")
+                            }
                         }
                     }
                 }
             }
         }
     };
+    if local_metadata_path.is_empty() {
+        let directory = data_dir(&app)?
+            .join("attachments/captures")
+            .join(&capture_id);
+        fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+        let path = directory.join("metadata.json");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&metadata).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        local_metadata_path = path.to_string_lossy().to_string();
+    }
+    if external_item_id.is_empty()
+        && redfox::platform_for_url(&url).is_some()
+        && method != "link-only"
+    {
+        let mut canonical_item = redfox::normalize_response(&url, method, &metadata);
+        if let Some(object) = canonical_item.as_object_mut() {
+            object.insert("provider".into(), Value::String(method.into()));
+            object.insert("providerEndpoint".into(), Value::String(method.into()));
+        }
+        external_item_id = external_intelligence::upsert_item(
+            &db(&app)?,
+            &new_id("external-item"),
+            &canonical_item,
+            &captured_at,
+            &timestamp_after_days(&captured_at, 30),
+            &local_metadata_path,
+        )?;
+        capture_provider = method.into();
+    }
     let title = metadata["title"]
         .as_str()
         .filter(|value| !value.trim().is_empty())
@@ -1695,22 +1989,31 @@ fn capture_link_blocking(app: AppHandle, url: String) -> Result<Value, String> {
         .or_else(|| metadata["author"].as_str())
         .unwrap_or("")
         .to_string();
-    let canonical = metadata["webpage_url"]
+    let canonical = metadata["canonicalUrl"]
         .as_str()
+        .or_else(|| metadata["webpage_url"].as_str())
         .or_else(|| metadata["original_url"].as_str())
         .unwrap_or(&url)
         .to_string();
-    let capture_id = new_id("capture");
-    let directory = data_dir(&app)?
-        .join("attachments/captures")
-        .join(&capture_id);
-    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    fs::write(
-        directory.join("metadata.json"),
-        serde_json::to_vec_pretty(&metadata).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    let record = json!({"content": if text.is_empty() { title.clone() } else { format!("{}\n\n{}", title, text) }, "type":"link", "status":"unprocessed", "platform":platform, "sourceUrl":url, "canonicalUrl":canonical, "author":author, "title":title, "publishedAt":metadata["upload_date"], "cover":metadata["thumbnail"], "captureStatus": if method == "link-only" || (title == url && text.is_empty()) { "link_saved" } else { "captured" }, "captureMethod":method, "captureErrors":errors, "localMetadataPath":directory.join("metadata.json").to_string_lossy(), "rightsConfirmed":false, "savedAt":now()});
+    let connection = db(&app)?;
+    let existing = existing_inbox_capture(&connection, &url, &canonical)?;
+    let mut record = json!({
+        "content": if text.is_empty() { title.clone() } else { format!("{}\n\n{}", title, text) },
+        "type":"link", "status":"unprocessed", "platform":platform, "sourceUrl":url,
+        "canonicalUrl":canonical, "externalContentId":metadata["externalId"], "contentType":metadata["contentType"],
+        "author":author, "title":title, "publishedAt":metadata.get("publishedAt").cloned().unwrap_or_else(|| metadata["upload_date"].clone()),
+        "cover":metadata.get("coverUrl").cloned().unwrap_or_else(|| metadata["thumbnail"].clone()),
+        "metrics":metadata["metrics"], "captureProvider":capture_provider,
+        "captureStatus": if method == "link-only" || (title == url && text.is_empty()) { "link_saved" } else { "captured" },
+        "captureMethod":method, "captureErrors":errors, "localMetadataPath":local_metadata_path,
+        "externalItemId":external_item_id, "rightsConfirmed":false, "savedAt":captured_at, "lastCapturedAt":now()
+    });
+    if let Some(existing) = existing {
+        if let Some(object) = record.as_object_mut() {
+            object.insert("id".into(), existing["id"].clone());
+            object.insert("createdAt".into(), existing["createdAt"].clone());
+        }
+    }
     save_record(app, "inbox".into(), record)
 }
 
@@ -2084,6 +2387,11 @@ fn agent_tool_metadata(tool: &str) -> Option<(&'static str, &'static str, bool, 
         "createReview" => Some(("reviews", "LOW_WRITE", true, "CREATE")),
         "createInsight" => Some(("insights", "LOW_WRITE", true, "CREATE")),
         "createPrinciple" => Some(("principles", "LOW_WRITE", true, "CREATE")),
+        "createExternalSource" => Some(("externalSources", "MEDIUM_WRITE", true, "CREATE")),
+        "updateExternalSource" => Some(("externalSources", "MEDIUM_WRITE", true, "UPDATE")),
+        "updateExternalSignal" => Some(("signals", "MEDIUM_WRITE", true, "UPDATE")),
+        "createOpportunity" => Some(("opportunities", "LOW_WRITE", true, "CREATE")),
+        "updateOpportunity" => Some(("opportunities", "MEDIUM_WRITE", true, "UPDATE")),
         _ => None,
     }
 }
@@ -2109,6 +2417,8 @@ fn required_agent_fields(entity: &str) -> &'static [&'static str] {
         "knowledge" => &["title", "content"],
         "goals" | "projects" | "tasks" | "decisions" | "reviews" => &["title"],
         "insights" | "principles" => &["statement"],
+        "externalSources" => &["name"],
+        "signals" | "opportunities" | "intelligenceBriefs" => &["title"],
         "timeLogs" => &["title"],
         _ => &[],
     }
@@ -2211,6 +2521,29 @@ fn apply_agent_context(
             }
         }
     }
+    if ["externalSources", "opportunities"].contains(&entity) {
+        if object
+            .get("projectId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .is_empty()
+        {
+            if let Some(project_id) = context_string(context, "currentProjectId") {
+                object.insert("projectId".into(), Value::String(project_id));
+            }
+        }
+        if object
+            .get("goalId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .is_empty()
+        {
+            if let Some(goal_id) = context_string(context, "currentGoalId") {
+                object.insert("goalId".into(), Value::String(goal_id));
+            }
+        }
+    }
+
     if entity == "timeLogs"
         && object
             .get("title")
@@ -2657,7 +2990,46 @@ fn ask_chief_blocking(
             local_context.push(record);
         }
     }
-    local_context.truncate(36);
+    let external_question = page_context.get("currentRoute").and_then(Value::as_str)
+        == Some("externalIntelligence")
+        || [
+            "市场",
+            "竞品",
+            "外部信号",
+            "机会",
+            "趋势",
+            "RedFox",
+            "抖音",
+            "小红书",
+            "公众号",
+        ]
+        .iter()
+        .any(|keyword| question.contains(keyword));
+    if external_question {
+        for entity in [
+            "intelligenceBriefs",
+            "signals",
+            "opportunities",
+            "externalSources",
+        ] {
+            for record in list_records(app.clone(), entity.into())?
+                .into_iter()
+                .take(12)
+            {
+                if !local_context
+                    .iter()
+                    .any(|existing| existing["id"] == record["id"])
+                {
+                    local_context.push(record);
+                }
+            }
+        }
+        local_context.push(json!({
+            "id":"verified-external-items", "entity":"dataRecords", "type":"VERIFIED_EXTERNAL_TOOL_RESULT",
+            "title":"外部情报已验证内容样本", "items":external_intelligence::list_items(&connection, 30)?, "evidenceLevel":"REALITY"
+        }));
+    }
+    local_context.truncate(48);
     let context_json =
         serde_json::to_string_pretty(&local_context).map_err(|error| error.to_string())?;
     let schema_json = serde_json::to_string(&schema_registry.unwrap_or_else(|| json!([])))
@@ -2680,7 +3052,10 @@ fn ask_chief_blocking(
 8. 如果缺少真正必要字段，将 mode=chat，missingFields 列出并只问最少问题。
 9. 普通分析/搜索问题 mode=chat，依据本地记录回答；可以明确说明正在调用找到的思维模型。
 10. 不向用户暴露 JSON、Schema、数据库、SQL、内部 API 或 Tool 技术细节。
-11. 当当前页面上下文 analysisMode=timeline_readonly 时，只能进行基于证据的只读分析，mode 必须为 chat，禁止生成 Action。"#;
+11. 当当前页面上下文 analysisMode=timeline_readonly 时，只能进行基于证据的只读分析，mode 必须为 chat，禁止生成 Action。
+12. External Intelligence 分析必须区分事实、确定性计算、AI 推断、数据缺口和替代解释；不得把爆款等同于需求，不得把转载等同于独立信号。
+13. 创建情报源、机会或由信号生成决策时必须生成 Action 预览；不得自动创建 Project、增加预算、采购或修改财务。
+14. 外部指标只能引用 VERIFIED_EXTERNAL_TOOL_RESULT、Signal 或真实本地记录；缺失时必须说明数据不足。"#;
     let mut messages = Vec::new();
     let recent_history = history.unwrap_or_default();
     let skip = recent_history.len().saturating_sub(10);
@@ -2762,6 +3137,11 @@ pub fn run() {
             initialize_database,
             check_relationship_integrity,
             capture_link,
+            get_capture_provider_config,
+            configure_capture_provider,
+            test_capture_provider,
+            list_external_items,
+            cleanup_external_cache,
             list_records,
             get_record,
             save_record,
@@ -2795,6 +3175,36 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn external_intelligence_entities_and_agent_tools_are_registered() {
+        for entity in [
+            "externalSources",
+            "signals",
+            "opportunities",
+            "intelligenceBriefs",
+        ] {
+            assert!(is_entity(entity));
+        }
+        assert_eq!(
+            agent_tool_metadata("createExternalSource").unwrap().0,
+            "externalSources"
+        );
+        assert_eq!(
+            agent_tool_metadata("createOpportunity").unwrap().0,
+            "opportunities"
+        );
+    }
+
+    #[test]
+    fn capture_provider_config_never_contains_the_api_key() {
+        let config = capture_provider_config(true);
+        let serialized = serde_json::to_string(&config).unwrap();
+        assert!(config["providers"][0]["configured"].as_bool().unwrap());
+        assert!(!serialized.contains("apiKey"));
+        assert!(!serialized.contains("REDFOX_API_KEY"));
+        assert!(!serialized.contains("secret"));
+    }
+
     #[test]
     fn agent_registry_allows_mental_model_writes_but_not_delete_tools() {
         assert_eq!(
@@ -2892,6 +3302,79 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn external_source_capacity_limits_new_and_reactivated_sources() {
+        let connection = relationship_test_db();
+        for index in 0..20 {
+            put(
+                &connection,
+                "externalSources",
+                &format!("source-{index}"),
+                json!({"name":format!("Source {index}"),"status":"active"}),
+            );
+        }
+        assert!(ensure_external_source_capacity(
+            &connection,
+            "externalSources",
+            "source-new",
+            &json!({"name":"New","status":"active"})
+        )
+        .is_err());
+        assert!(ensure_external_source_capacity(
+            &connection,
+            "externalSources",
+            "source-0",
+            &json!({"name":"Existing","status":"active"})
+        )
+        .is_ok());
+        put(
+            &connection,
+            "externalSources",
+            "source-paused",
+            json!({"name":"Paused","status":"paused"}),
+        );
+        assert!(ensure_external_source_capacity(
+            &connection,
+            "externalSources",
+            "source-paused",
+            &json!({"name":"Paused","status":"active"})
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn external_decisions_validate_signal_and_opportunity_relations() {
+        let connection = relationship_test_db();
+        put(
+            &connection,
+            "signals",
+            "signal-1",
+            json!({"title":"Signal","status":"observing"}),
+        );
+        put(
+            &connection,
+            "opportunities",
+            "opportunity-1",
+            json!({"title":"Opportunity","status":"draft"}),
+        );
+        let decision = normalize_record(
+            &connection,
+            "decisions",
+            &json!({"title":"Decision","signalIds":["signal-1"],"opportunityId":"opportunity-1"}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(decision["signalIds"], json!(["signal-1"]));
+        assert_eq!(decision["opportunityId"], "opportunity-1");
+        assert!(normalize_record(
+            &connection,
+            "decisions",
+            &json!({"title":"Bad decision","signalIds":["missing"]}),
+            true,
+        )
+        .is_err());
     }
 
     #[test]

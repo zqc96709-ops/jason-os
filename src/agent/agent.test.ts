@@ -13,6 +13,13 @@ describe('Jason OS Agent registries and context', () => {
     expect(toolRegistry.length).toBeGreaterThanOrEqual(30)
   })
 
+  it('registers External Intelligence schemas, relations, and guarded write tools', () => {
+    expect(schemaFor('externalSources')?.requiredFields).toContain('name')
+    expect(schemaFor('decisions')?.relations).toMatchObject({ signalIds: 'signals', opportunityId: 'opportunities' })
+    expect(toolFor('createExternalSource')).toMatchObject({ entity: 'externalSources', riskLevel: 'MEDIUM_WRITE', requiresConfirmation: true })
+    expect(toolFor('createOpportunity')).toMatchObject({ entity: 'opportunities', requiresConfirmation: true })
+  })
+
   it('derives Goal → Project → Task context from the current task', () => {
     const records = [record('goals', 'g1'), record('projects', 'p1', { goalId: 'g1' }), record('tasks', 't1', { projectId: 'p1', goalId: 'g1' })]
     expect(buildAgentContext({ currentRoute: 'tasks', records, selectedProjectId: null, detailId: 't1', conversation: [] })).toMatchObject({ currentEntityType: 'tasks', currentEntityId: 't1', currentTaskId: 't1', currentProjectId: 'p1', currentGoalId: 'g1' })

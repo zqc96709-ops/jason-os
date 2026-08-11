@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isActive, isOverdue, linkedTo, minutesToday, timeline, type RecordData } from './model'
+import { entities, isActive, isOverdue, linkedTo, minutesToday, timeline, type RecordData } from './model'
 
 const record = (entity: RecordData['entity'], extra: Record<string, unknown> = {}) => ({ id: Math.random().toString(), entity, createdAt: '1', updatedAt: '2', ...extra }) as RecordData
 
@@ -9,4 +9,5 @@ describe('Jason OS computed views', () => {
   it('uses stable occurrence dates and excludes non-timeline entities', () => { expect(timeline([record('tasks', { createdAt: '2026-08-09' }), record('knowledge'), record('decisions', { createdAt: '2026-08-10' })]).map((item) => item.entity)).toEqual(['decisions', 'tasks']) })
   it('detects overdue tasks but ignores completed tasks', () => { expect(isOverdue(record('tasks', { dueDate: '2020-01-01', status: 'todo' }))).toBe(true); expect(isOverdue(record('tasks', { dueDate: '2020-01-01', status: 'completed' }))).toBe(false) })
   it('recognizes direct and multi-value relations', () => { expect(linkedTo(record('tasks', { projectId: 'p1' }), 'p1')).toBe(true); expect(linkedTo(record('knowledge', { projectIds: ['p1', 'p2'] }), 'p2')).toBe(true) })
+  it('links external evidence to decisions rather than reviews', () => { const decisionFields = entities.find((item) => item.entity === 'decisions')?.fields.map((field) => field.key); const reviewFields = entities.find((item) => item.entity === 'reviews')?.fields.map((field) => field.key); expect(decisionFields).toEqual(expect.arrayContaining(['signalIds', 'opportunityId'])); expect(reviewFields).not.toEqual(expect.arrayContaining(['signalIds', 'opportunityId'])) })
 })

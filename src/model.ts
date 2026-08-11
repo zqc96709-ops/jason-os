@@ -1,7 +1,8 @@
+import { timelineOccurredAt, timelineRecords } from './timeline'
 export type Entity =
   | 'goals' | 'keyResults' | 'projects' | 'tasks' | 'hypotheses' | 'experiments' | 'timeLogs' | 'results'
   | 'reviews' | 'knowledge' | 'insights' | 'principles' | 'mentalModels' | 'mentalModelUsages'
-  | 'decisions' | 'inbox' | 'events' | 'people' | 'dataRecords' | 'attachments' | 'agentRuns' | 'agentActions'
+  | 'decisions' | 'inbox' | 'events' | 'people' | 'dataRecords' | 'attachments' | 'timelineEvents' | 'agentRuns' | 'agentActions'
 
 export type RecordData = Record<string, unknown> & {
   id: string
@@ -65,7 +66,7 @@ export const entities: EntityConfig[] = [
     { key: 'blockers', label: '阻塞', multiline: true }, { key: 'nextAction', label: '下一步行动', multiline: true },
   ] },
   { entity: 'tasks', label: '任务', singular: '任务', icon: '□', titleKey: 'title', description: '任务是可以立即执行的下一步行动。', fields: [
-    { key: 'title', label: '任务' }, { key: 'description', label: '说明', multiline: true }, { key: 'projectId', label: '所属项目', relation: 'projects' },
+    { key: 'title', label: '任务' }, { key: 'description', label: '说明', multiline: true }, { key: 'decisionId', label: '来源决策', relation: 'decisions' }, { key: 'projectId', label: '所属项目', relation: 'projects' },
     { key: 'goalId', label: '所属目标', relation: 'goals' }, { key: 'status', label: '状态', type: 'select', options: statuses.task },
     { key: 'priority', label: '优先级', type: 'select', options: priorities },
     { key: 'importance', label: '重要程度', type: 'select', options: [option('important', '重要'), option('not_important', '不重要')] },
@@ -110,13 +111,13 @@ export const entities: EntityConfig[] = [
   ] },
   { entity: 'insights', label: '洞见', singular: '洞见', icon: '✦', titleKey: 'statement', description: '从经验中提炼“我发现了什么”。', fields: [
     { key: 'statement', label: '洞见' }, { key: 'explanation', label: '解释', multiline: true }, { key: 'evidence', label: '证据', multiline: true },
-    { key: 'source', label: '来源' }, { key: 'taskId', label: '任务', relation: 'tasks' }, { key: 'projectId', label: '项目', relation: 'projects' },
+    { key: 'source', label: '来源' }, { key: 'taskId', label: '任务', relation: 'tasks' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'goalId', label: '目标', relation: 'goals' },
     { key: 'reviewId', label: '复盘', relation: 'reviews' }, { key: 'resultId', label: '结果', relation: 'results' }, { key: 'knowledgeId', label: '知识', relation: 'knowledge' }, { key: 'confidence', label: '置信度（0-100）', type: 'number' },
   ] },
   { entity: 'principles', label: '原则', singular: '原则', icon: '∴', titleKey: 'statement', description: '记录长期相信并愿意用于决策的原则。', fields: [
     { key: 'statement', label: '原则' }, { key: 'explanation', label: '解释', multiline: true }, { key: 'evidence', label: '证据', multiline: true },
     { key: 'examples', label: '示例', multiline: true }, { key: 'limitations', label: '局限', multiline: true }, { key: 'source', label: '来源' },
-    { key: 'usage', label: '使用说明', multiline: true }, { key: 'mentalModelIds', label: '相关思维模型', relation: 'mentalModels', multiple: true },
+    { key: 'usage', label: '使用说明', multiline: true }, { key: 'insightIds', label: '来源洞见', relation: 'insights', multiple: true }, { key: 'reviewIds', label: '来源复盘', relation: 'reviews', multiple: true }, { key: 'mentalModelIds', label: '相关思维模型', relation: 'mentalModels', multiple: true },
   ] },
   { entity: 'mentalModels', label: '思维模型', singular: '思维模型', icon: '◇', titleKey: 'name', description: '可反复调用并验证有效性的认知工具。', fields: [
     { key: 'name', label: '名称' }, { key: 'category', label: '类型' }, { key: 'corePrinciple', label: '核心原则', multiline: true }, { key: 'problem', label: '解决的问题', multiline: true },
@@ -157,6 +158,12 @@ export const entities: EntityConfig[] = [
   ] },
   { entity: 'dataRecords', label: '数据记录', singular: '数据记录', icon: '▦', titleKey: 'title', description: '未来扩展的结构化本地数据。', fields: [{ key: 'type', label: '类型' }, { key: 'title', label: '标题' }, { key: 'dataJson', label: 'JSON 数据', multiline: true }, { key: 'source', label: '来源' }] },
   { entity: 'attachments', label: '附件', singular: '附件', icon: '⊞', titleKey: 'fileName', description: '保存在本地文件系统的附件元数据。', fields: [{ key: 'fileName', label: '文件名' }, { key: 'path', label: '本地路径' }, { key: 'mimeType', label: 'MIME 类型' }, { key: 'relatedEntityType', label: '关联实体类型' }, { key: 'relatedEntityId', label: '关联实体 ID' }] },
+  { entity: 'timelineEvents', label: '时间线事件', singular: '时间线事件', icon: '⌁', titleKey: 'title', description: '保存关键状态变化的不可变证据，不作为普通内容手动创建。', fields: [
+    { key: 'title', label: '事件' }, { key: 'eventType', label: '事件类型' }, { key: 'occurredAt', label: '发生时间', type: 'datetime-local' },
+    { key: 'timeMeaning', label: '时间语义' }, { key: 'timelineImportance', label: '重要性' }, { key: 'evidenceLevel', label: '证据等级' },
+    { key: 'sourceEntityType', label: '来源类型' }, { key: 'sourceEntityId', label: '来源记录 ID' }, { key: 'beforeValue', label: '变更前' }, { key: 'afterValue', label: '变更后' },
+    { key: 'goalId', label: '目标', relation: 'goals' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'taskId', label: '任务', relation: 'tasks' },
+  ] },
   { entity: 'agentRuns', label: 'AI 运行', singular: 'AI 运行', icon: 'AI', titleKey: 'input', description: 'AI 分析的审计记录。', fields: [] },
   { entity: 'agentActions', label: 'AI 操作', singular: 'AI 操作', icon: '→', titleKey: 'actionType', description: 'AI 实际动作的审计记录。', fields: [] },
 ]
@@ -168,11 +175,11 @@ export const statusLabel = (value: unknown) => ({ active: '进行中', planned: 
 export const priorityLabel = (value: unknown) => ({ high: '高', medium: '中', low: '低' }[String(value)] || String(value || '未设置'))
 export const isActive = (record: Partial<RecordData>) => !['completed', 'archived', 'processed', 'cancelled', 'validated', 'rejected', 'wrong', '已完成', '已归档', '已处理'].includes(String(record.status || 'active'))
 export const localDateKey = (value: Date | string | number = new Date()) => { const date = value instanceof Date ? value : new Date(Number(value) || value); return Number.isNaN(date.getTime()) ? '' : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` }
-export const recordDate = (record: Partial<RecordData>) => String(record.startAt || record.date || record.dueDate || record.decisionDate || record.completedAt || record.updatedAt || record.createdAt || '')
+export const recordDate = timelineOccurredAt
 export const isToday = (value: unknown) => localDateKey(String(value || '')) === localDateKey()
 export const isOverdue = (record: Partial<RecordData>) => Boolean(record.dueDate) && localDateKey(String(record.dueDate)) < localDateKey() && !['completed', 'cancelled'].includes(String(record.status))
 export const durationMinutes = (record: Partial<RecordData>) => Number(record.durationMinutes || record.duration || 0)
 export const minutesToday = (records: RecordData[]) => records.filter((record) => record.entity === 'timeLogs' && isToday(record.startAt)).reduce((total, record) => total + durationMinutes(record), 0)
-export const timeline = (records: RecordData[]) => records.filter((record) => ['goals', 'projects', 'tasks', 'timeLogs', 'events', 'results', 'reviews', 'insights', 'decisions'].includes(record.entity)).sort((a, b) => new Date(Number(recordDate(b)) || recordDate(b)).getTime() - new Date(Number(recordDate(a)) || recordDate(a)).getTime())
+export const timeline = timelineRecords
 export const linkedTo = (record: Partial<RecordData>, id: string) => Object.entries(record).some(([key, value]) => (key.endsWith('Id') && value === id) || (key.endsWith('Ids') && (Array.isArray(value) ? value.includes(id) : String(value || '').split(',').map((item) => item.trim()).includes(id))))
 export const percent = (value: unknown) => Math.max(0, Math.min(100, Number(value || 0)))

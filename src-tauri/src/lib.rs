@@ -36,6 +36,7 @@ const ENTITIES: &[&str] = &[
     "people",
     "dataRecords",
     "attachments",
+    "timelineEvents",
     "agentRuns",
     "agentActions",
 ];
@@ -67,6 +68,301 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     fs::create_dir_all(dir.join("exports")).map_err(|e| e.to_string())?;
     fs::create_dir_all(dir.join("backups")).map_err(|e| e.to_string())?;
     Ok(dir)
+}
+
+const TIMELINE_SOURCE_ENTITIES: &[&str] = &[
+    "goals",
+    "projects",
+    "tasks",
+    "timeLogs",
+    "events",
+    "results",
+    "reviews",
+    "insights",
+    "decisions",
+    "timelineEvents",
+];
+
+fn timeline_text(data: &Value, key: &str) -> Option<String> {
+    data.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn first_timeline_value(data: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| timeline_text(data, key))
+}
+
+fn timeline_semantics(
+    entity: &str,
+    data: &Value,
+    created_at: &str,
+    updated_at: &str,
+) -> (String, &'static str) {
+    match entity {
+        "timeLogs" => (
+            first_timeline_value(data, &["startAt"]).unwrap_or_else(|| created_at.into()),
+            "actual",
+        ),
+        "events" => (
+            first_timeline_value(data, &["startAt"]).unwrap_or_else(|| created_at.into()),
+            "planned",
+        ),
+        "decisions" => (
+            first_timeline_value(data, &["date", "decisionDate"])
+                .unwrap_or_else(|| created_at.into()),
+            "recorded",
+        ),
+        "results" => (
+            first_timeline_value(data, &["date", "completedAt"])
+                .unwrap_or_else(|| created_at.into()),
+            "actual",
+        ),
+        "tasks" if data.get("status").and_then(Value::as_str) == Some("completed") => (
+            first_timeline_value(data, &["completedAt"]).unwrap_or_else(|| updated_at.into()),
+            "actual",
+        ),
+        "tasks" => first_timeline_value(data, &["dueAt", "dueDate"])
+            .map(|value| (value, "planned"))
+            .unwrap_or_else(|| (created_at.into(), "recorded")),
+        "timelineEvents" => (
+            first_timeline_value(data, &["occurredAt"]).unwrap_or_else(|| created_at.into()),
+            "actual",
+        ),
+        _ => (created_at.into(), "recorded"),
+    }
+}
+
+fn timeline_time_zone(value: &str) -> &'static str {
+    if value.chars().all(|character| character.is_ascii_digit()) || value.ends_with('Z') {
+        "UTC"
+    } else if value.rfind(['+', '-']).is_some_and(|index| index > 9) {
+        "offset"
+    } else {
+        "local"
+    }
+}
+
+fn timeline_precision(value: &str) -> &'static str {
+    if value.len() == 10 && value.chars().nth(4) == Some('-') && value.chars().nth(7) == Some('-') {
+        "date"
+    } else {
+        "datetime"
+    }
+}
+
+fn timeline_importance(entity: &str, data: &Value) -> &'static str {
+    if data.get("timelineImportance").and_then(Value::as_str) == Some("key") {
+        return "key";
+    }
+    if ["decisions", "results", "reviews", "insights"].contains(&entity) {
+        return "key";
+    }
+    if entity == "projects"
+        && (["blocked", "completed"]
+            .contains(&data.get("status").and_then(Value::as_str).unwrap_or(""))
+            || ["at_risk", "blocked"]
+                .contains(&data.get("health").and_then(Value::as_str).unwrap_or("")))
+    {
+        return "key";
+    }
+    if entity == "goals"
+        && ["completed", "paused"]
+            .contains(&data.get("status").and_then(Value::as_str).unwrap_or(""))
+    {
+        return "key";
+    }
+    if entity == "tasks"
+        && data.get("status").and_then(Value::as_str) == Some("completed")
+        && (data.get("priority").and_then(Value::as_str) == Some("high")
+            || data.get("importance").and_then(Value::as_str) == Some("important"))
+    {
+        return "key";
+    }
+    "normal"
+}
+
+fn timeline_evidence_level(entity: &str, data: &Value) -> &'static str {
+    match data.get("evidenceLevel").and_then(Value::as_str) {
+        Some("REALITY") => return "REALITY",
+        Some("USER_CONFIRMED") => return "USER_CONFIRMED",
+        Some("AI_CONFIRMED") => return "AI_CONFIRMED",
+        Some("AI_SUGGESTION") => return "AI_SUGGESTION",
+        _ => {}
+    }
+    if ["timeLogs", "results", "timelineEvents"].contains(&entity) {
+        "REALITY"
+    } else if data.get("agentActionId").and_then(Value::as_str).is_some() {
+        "AI_CONFIRMED"
+    } else {
+        "USER_CONFIRMED"
+    }
+}
+
+fn apply_timeline_metadata(
+    entity: &str,
+    data: &Value,
+    created_at: &str,
+    updated_at: &str,
+) -> Value {
+    if !TIMELINE_SOURCE_ENTITIES.contains(&entity) {
+        return data.clone();
+    }
+    let mut enriched = data.clone();
+    if !enriched.is_object() {
+        enriched = json!({});
+    }
+    let (occurred_at, meaning) = timeline_semantics(entity, &enriched, created_at, updated_at);
+    let importance = timeline_importance(entity, &enriched);
+    let evidence = timeline_evidence_level(entity, &enriched);
+    let object = enriched.as_object_mut().unwrap();
+    object.insert("occurredAt".into(), Value::String(occurred_at.clone()));
+    object.insert("timeMeaning".into(), Value::String(meaning.into()));
+    object.insert(
+        "timeZone".into(),
+        Value::String(timeline_time_zone(&occurred_at).into()),
+    );
+    object.insert(
+        "timePrecision".into(),
+        Value::String(timeline_precision(&occurred_at).into()),
+    );
+    object.insert(
+        "timelineImportance".into(),
+        Value::String(importance.into()),
+    );
+    object.insert("evidenceLevel".into(), Value::String(evidence.into()));
+    enriched
+}
+
+fn timeline_change_specs(entity: &str, before: &Value, after: &Value) -> Vec<Value> {
+    let mut changes = Vec::new();
+    let mut add = |field: &str, event_type: &str, title: &str, importance: &str| {
+        let old = before.get(field).cloned().unwrap_or(Value::Null);
+        let new = after.get(field).cloned().unwrap_or(Value::Null);
+        if old != new {
+            changes.push(json!({"field":field,"eventType":event_type,"title":title,"beforeValue":old,"afterValue":new,"timelineImportance":importance}));
+        }
+    };
+    match entity {
+        "goals" => add("status", "goal_status_changed", "目标状态发生变化", "key"),
+        "projects" => {
+            add(
+                "status",
+                "project_status_changed",
+                "项目状态发生变化",
+                "key",
+            );
+            add(
+                "health",
+                "project_health_changed",
+                "项目健康度发生变化",
+                "key",
+            );
+            add(
+                "blockers",
+                "project_blockers_changed",
+                "项目阻塞发生变化",
+                "key",
+            );
+        }
+        "tasks" => {
+            add(
+                "status",
+                "task_status_changed",
+                "任务状态发生变化",
+                if after.get("status").and_then(Value::as_str) == Some("completed") {
+                    "key"
+                } else {
+                    "normal"
+                },
+            );
+            add(
+                "dueDate",
+                "task_due_date_changed",
+                "任务截止日期发生变化",
+                "normal",
+            );
+            add(
+                "dueAt",
+                "task_due_time_changed",
+                "任务具体时间发生变化",
+                "normal",
+            );
+        }
+        "decisions" => add(
+            "status",
+            "decision_status_changed",
+            "决策状态发生变化",
+            "key",
+        ),
+        _ => {}
+    }
+    changes
+}
+
+fn timeline_event_key(source_id: &str, change: &Value) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source_id.hash(&mut hasher);
+    change.to_string().hash(&mut hasher);
+    format!("timeline:{:016x}", hasher.finish())
+}
+
+fn write_timeline_change_events(
+    connection: &Connection,
+    entity: &str,
+    source_id: &str,
+    before: Option<&Value>,
+    after: &Value,
+) -> Result<(), String> {
+    if entity == "timelineEvents" {
+        return Ok(());
+    }
+    let Some(before) = before else {
+        return Ok(());
+    };
+    for change in timeline_change_specs(entity, before, after) {
+        let key = timeline_event_key(source_id, &change);
+        let exists: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM records WHERE entity='timelineEvents' AND deleted_at IS NULL AND json_extract(data_json,'$.timelineEventKey')=?1)", params![key], |row| row.get(0)).map_err(|error| error.to_string())?;
+        if exists {
+            continue;
+        }
+        let occurred_at = now();
+        let mut event = json!({
+            "title": change["title"], "eventType": change["eventType"], "occurredAt": occurred_at,
+            "timeMeaning": "actual", "timeZone": "UTC", "timePrecision": "datetime",
+            "timelineImportance": change["timelineImportance"], "evidenceLevel": "REALITY",
+            "sourceEntityType": entity, "sourceEntityId": source_id, "timelineEventKey": key,
+            "beforeValue": change["beforeValue"], "afterValue": change["afterValue"]
+        });
+        if let Some(object) = event.as_object_mut() {
+            for field in ["goalId", "projectId", "taskId"] {
+                if let Some(value) = after.get(field).and_then(Value::as_str) {
+                    object.insert(field.into(), Value::String(value.into()));
+                }
+            }
+            if entity == "goals" {
+                object.insert("goalId".into(), Value::String(source_id.into()));
+            }
+            if entity == "projects" {
+                object.insert("projectId".into(), Value::String(source_id.into()));
+            }
+            if entity == "tasks" {
+                object.insert("taskId".into(), Value::String(source_id.into()));
+            }
+        }
+        let id = new_id("timelineEvents");
+        let saved = write_record(
+            connection,
+            "timelineEvents",
+            &id,
+            &event,
+            Some(&occurred_at),
+        )?;
+        sync_relations(connection, &id, &saved)?;
+    }
+    Ok(())
 }
 
 fn db(app: &AppHandle) -> Result<Connection, String> {
@@ -177,6 +473,56 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
                 params![now()],
             )
             .map_err(|e| e.to_string())?;
+    }
+    let timeline_backfilled: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version=6)",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !timeline_backfilled {
+        let rows = {
+            let mut statement = connection.prepare("SELECT id, entity, data_json, created_at, updated_at FROM records WHERE deleted_at IS NULL").map_err(|error| error.to_string())?;
+            let mapped = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                })
+                .map_err(|error| error.to_string())?;
+            mapped
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?
+        };
+        for (id, entity, raw, created_at, updated_at) in rows {
+            if !TIMELINE_SOURCE_ENTITIES.contains(&entity.as_str()) {
+                continue;
+            }
+            let data = serde_json::from_str::<Value>(&raw).unwrap_or_else(|_| json!({}));
+            let enriched = apply_timeline_metadata(&entity, &data, &created_at, &updated_at);
+            if enriched != data {
+                connection
+                    .execute(
+                        "UPDATE records SET data_json=?2 WHERE id=?1",
+                        params![
+                            id,
+                            serde_json::to_string(&enriched).map_err(|error| error.to_string())?
+                        ],
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (6, ?1)",
+                params![now()],
+            )
+            .map_err(|error| error.to_string())?;
     }
     Ok(connection)
 }
@@ -626,16 +972,27 @@ fn save_record(app: AppHandle, entity: String, data: Value) -> Result<Value, Str
     if !is_entity(&entity) {
         return Err("Unknown entity".into());
     }
+    if entity == "timelineEvents" {
+        return Err("时间线事件只能由系统生成，不能手动创建或修改".into());
+    }
     let id = data
         .get("id")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| new_id(&entity));
-    let created_at = data.get("createdAt").and_then(Value::as_str);
     let connection = db(&app)?;
+    let existing = record_by_id(&connection, &id)?;
+    let created_at = existing
+        .as_ref()
+        .and_then(|record| record.get("createdAt"))
+        .and_then(Value::as_str)
+        .or_else(|| data.get("createdAt").and_then(Value::as_str))
+        .map(str::to_string)
+        .unwrap_or_else(now);
     let normalized = normalize_record(&connection, &entity, &data, true)?;
-    if entity == "timeLogs" && normalized["isRunning"].as_bool().unwrap_or(false) {
+    let enriched = apply_timeline_metadata(&entity, &normalized, &created_at, &now());
+    if entity == "timeLogs" && enriched["isRunning"].as_bool().unwrap_or(false) {
         let another_running: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM records WHERE entity='timeLogs' AND id<>?1 AND archived_at IS NULL AND deleted_at IS NULL AND json_extract(data_json,'$.isRunning')=1)",
             params![id],
@@ -645,11 +1002,12 @@ fn save_record(app: AppHandle, entity: String, data: Value) -> Result<Value, Str
             return Err("全局已有正在运行的计时器".into());
         }
     }
-    let saved = write_record(&connection, &entity, &id, &normalized, created_at)?;
-    sync_relations(&connection, &id, &normalized)?;
+    let saved = write_record(&connection, &entity, &id, &enriched, Some(&created_at))?;
+    sync_relations(&connection, &id, &enriched)?;
     if entity == "projects" || entity == "tasks" {
         cascade_context(&connection, &entity, &id)?;
     }
+    write_timeline_change_events(&connection, &entity, &id, existing.as_ref(), &saved)?;
     Ok(saved)
 }
 
@@ -1974,6 +2332,12 @@ fn execute_registered_tool(app: AppHandle, action: &Value) -> Result<Value, Stri
         .ok_or("Action 缺少 Tool")?;
     let (entity, _, _, action_type) = agent_tool_metadata(tool).ok_or("Tool 未注册")?;
     let mut input = action.get("input").cloned().unwrap_or_else(|| json!({}));
+    if let Some(object) = input.as_object_mut() {
+        if let Some(action_id) = action.get("actionId").and_then(Value::as_str) {
+            object.insert("agentActionId".into(), Value::String(action_id.into()));
+            object.insert("evidenceLevel".into(), Value::String("AI_CONFIRMED".into()));
+        }
+    }
     validate_agent_input(entity, action_type, &input)?;
     match action_type {
         "CREATE" => save_record(app, entity.into(), input),
@@ -2376,6 +2740,91 @@ mod tests {
             action_idempotency_key("createMentalModel", &input),
             action_idempotency_key("createMentalModel", &input)
         );
+    }
+
+    #[test]
+    fn timeline_metadata_separates_planned_and_actual_time() {
+        let planned = apply_timeline_metadata(
+            "tasks",
+            &json!({"status":"todo","dueDate":"2026-08-12"}),
+            "2026-08-10T08:00:00-07:00",
+            "2026-08-11T08:00:00-07:00",
+        );
+        assert_eq!(planned["occurredAt"], "2026-08-12");
+        assert_eq!(planned["timeMeaning"], "planned");
+        assert_eq!(planned["timeZone"], "local");
+        let actual = apply_timeline_metadata(
+            "tasks",
+            &json!({"status":"completed","completedAt":"2026-08-11T09:30:00-07:00"}),
+            "2026-08-10T08:00:00-07:00",
+            "2026-08-11T09:30:00-07:00",
+        );
+        assert_eq!(actual["occurredAt"], "2026-08-11T09:30:00-07:00");
+        assert_eq!(actual["timeMeaning"], "actual");
+        assert_eq!(actual["timeZone"], "offset");
+    }
+
+    #[test]
+    fn timeline_metadata_keeps_legacy_reviews_on_created_time() {
+        let review = apply_timeline_metadata(
+            "reviews",
+            &json!({"title":"Review"}),
+            "2026-08-01T10:00:00-07:00",
+            "2026-08-11T10:00:00-07:00",
+        );
+        assert_eq!(review["occurredAt"], "2026-08-01T10:00:00-07:00");
+        assert_eq!(review["timeMeaning"], "recorded");
+    }
+
+    #[test]
+    fn timeline_change_events_are_idempotent() {
+        let connection = relationship_test_db();
+        put(
+            &connection,
+            "tasks",
+            "task-1",
+            json!({"title":"Task","status":"todo"}),
+        );
+        let before = json!({"title":"Task","status":"todo"});
+        let after = json!({"title":"Task","status":"completed","taskId":"task-1"});
+        write_timeline_change_events(&connection, "tasks", "task-1", Some(&before), &after)
+            .unwrap();
+        write_timeline_change_events(&connection, "tasks", "task-1", Some(&before), &after)
+            .unwrap();
+        let count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM records WHERE entity='timelineEvents'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn causal_relation_ids_must_reference_the_expected_entity() {
+        let connection = relationship_test_db();
+        put(
+            &connection,
+            "decisions",
+            "decision-1",
+            json!({"title":"Decision"}),
+        );
+        let task = normalize_record(
+            &connection,
+            "tasks",
+            &json!({"title":"Task","decisionId":"decision-1"}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(task["decisionId"], "decision-1");
+        assert!(normalize_record(
+            &connection,
+            "tasks",
+            &json!({"title":"Task","decisionId":"missing"}),
+            true
+        )
+        .is_err());
     }
 
     #[test]

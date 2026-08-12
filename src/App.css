@@ -93,3 +93,10 @@ button,input,textarea,select{border-radius:var(--radius)}
 /* Keep the source-person filter proportional to the category controls. */
 .mental-model-filters>select{width:176px;min-width:176px;max-width:176px;flex:0 0 176px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:720px){.mental-model-filters>select{width:100%;min-width:0;max-width:none;flex:1 1 auto}}
+
+/* Equal-width category controls aligned with the decision stack below. */
+.mental-model-filters{display:grid;grid-template-columns:minmax(0,1fr) 176px;align-items:stretch;gap:10px;overflow:visible}
+.mental-model-filters .segmented{display:grid;grid-template-columns:repeat(9,minmax(0,1fr));width:100%;min-width:0;gap:0}
+.mental-model-filters .segmented button{width:100%;min-width:0;padding:7px 4px;white-space:nowrap;text-align:center}
+.mental-model-filters>select{align-self:stretch;width:176px;min-width:176px;max-width:176px;height:auto;margin:0}
+@media(max-width:720px){.mental-model-filters{display:flex;align-items:stretch;flex-direction:column}.mental-model-filters .segmented{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));width:100%;gap:4px}.mental-model-filters .segmented button{border-right:0}.mental-model-filters>select{width:100%;min-width:0;max-width:none;min-height:32px}}

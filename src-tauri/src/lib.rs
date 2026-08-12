@@ -1,3 +1,4 @@
+mod apify;
 mod external_intelligence;
 mod finance;
 mod redfox;
@@ -1618,13 +1619,12 @@ fn ensure_external_source_capacity(
     Ok(())
 }
 
-fn capture_provider_config(configured: bool) -> Value {
+fn capture_provider_config(redfox_configured: bool, apify_configured: bool) -> Value {
     json!({
-        "providers": [{
-            "id":"redfox", "label":"RedFoxHub", "configured":configured,
-            "supportedPlatforms":["微信公众号","抖音","小红书"],
-            "automaticSync":false, "mediaDownload":false
-        }]
+        "providers": [
+            {"id":"redfox", "label":"RedFoxHub", "configured":redfox_configured, "supportedPlatforms":["微信公众号","抖音","小红书"], "automaticSync":false, "mediaDownload":false},
+            {"id":"apify", "label":"Apify", "configured":apify_configured, "supportedPlatforms":["网页","微信公众号","抖音","小红书","X","Instagram","Facebook","Reddit","TikTok","YouTube"], "automaticSync":false, "mediaDownload":false}
+        ]
     })
 }
 
@@ -1640,6 +1640,20 @@ fn redfox_key() -> Result<String, String> {
         .filter(|value| !value.trim().is_empty())
         .map(str::to_string)
         .ok_or("尚未配置 RedFox API Key".to_string())
+}
+
+fn apify_key() -> Result<String, String> {
+    if let Ok(value) = std::env::var("APIFY_API_TOKEN") {
+        if !value.trim().is_empty() {
+            return Ok(value);
+        }
+    }
+    read_secrets()?
+        .get("apify")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .ok_or("尚未配置 Apify API Token".to_string())
 }
 
 fn timestamp_after_days(value: &str, days: i64) -> String {
@@ -1666,31 +1680,44 @@ fn get_finance_summary(app: AppHandle, project_id: Option<String>) -> Result<Val
 
 #[tauri::command]
 fn get_capture_provider_config() -> Result<Value, String> {
-    Ok(capture_provider_config(redfox_key().is_ok()))
+    Ok(capture_provider_config(
+        redfox_key().is_ok(),
+        apify_key().is_ok(),
+    ))
 }
 
 #[tauri::command]
 fn configure_capture_provider(provider: String, api_key: String) -> Result<Value, String> {
-    if provider != "redfox" {
-        return Err("当前只支持配置 RedFoxHub".into());
+    if !["redfox", "apify"].contains(&provider.as_str()) {
+        return Err("当前只支持配置 RedFoxHub 或 Apify".into());
     }
-    if !api_key.trim().is_empty() {
-        store_provider_key("redfox", api_key.trim())?;
-    } else if redfox_key().is_err() {
-        return Err("请输入 RedFox API Key".into());
+    let key = if !api_key.trim().is_empty() {
+        api_key.trim().to_string()
+    } else if provider == "redfox" {
+        redfox_key()?
+    } else {
+        apify_key()?
+    };
+    if provider == "apify" {
+        apify::test_token(&key)?;
     }
+    store_provider_key(&provider, &key)?;
     get_capture_provider_config()
 }
 
 #[tauri::command]
 async fn test_capture_provider(provider: String, url: String) -> Result<Value, String> {
-    if provider != "redfox" {
-        return Err("当前只支持测试 RedFoxHub".into());
-    }
     tauri::async_runtime::spawn_blocking(move || {
         let started = Instant::now();
-        let capture = redfox::capture(&redfox_key()?, url.trim())?;
-        Ok(json!({"ok":true,"provider":"redfox","latencyMs":started.elapsed().as_millis(),"content":capture.canonical}))
+        if provider == "redfox" {
+            let capture = redfox::capture(&redfox_key()?, url.trim())?;
+            return Ok(json!({"ok":true,"provider":"redfox","latencyMs":started.elapsed().as_millis(),"content":capture.canonical}));
+        }
+        if provider == "apify" {
+            let result = apify::test_token(&apify_key()?)?;
+            return Ok(json!({"ok":true,"provider":"apify","latencyMs":result["latencyMs"],"content":result}));
+        }
+        Err("当前只支持测试 RedFoxHub 或 Apify".into())
     }).await.map_err(|error| format!("采集服务后台任务失败：{error}"))?
 }
 
@@ -1851,13 +1878,19 @@ fn fetch_web_metadata(url: &str) -> Result<Value, String> {
 }
 
 #[tauri::command]
-async fn capture_link(app: AppHandle, url: String) -> Result<Value, String> {
-    tauri::async_runtime::spawn_blocking(move || capture_link_blocking(app, url))
-        .await
-        .map_err(|error| format!("采集后台任务失败：{error}"))?
+async fn capture_link(
+    app: AppHandle,
+    url: String,
+    provider: Option<String>,
+) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        capture_link_blocking(app, url, provider.unwrap_or_else(|| "auto".into()))
+    })
+    .await
+    .map_err(|error| format!("采集后台任务失败：{error}"))?
 }
 
-fn capture_link_blocking(app: AppHandle, url: String) -> Result<Value, String> {
+fn capture_link_blocking(app: AppHandle, url: String, provider: String) -> Result<Value, String> {
     let url = url.trim().to_string();
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err("请输入有效的 http/https 链接".into());
@@ -1869,7 +1902,7 @@ fn capture_link_blocking(app: AppHandle, url: String) -> Result<Value, String> {
     let mut external_item_id = String::new();
     let mut capture_provider = "local".to_string();
     let mut local_metadata_path = String::new();
-    let redfox_result = if redfox::platform_for_url(&url).is_some() {
+    let redfox_result = if provider != "apify" && redfox::platform_for_url(&url).is_some() {
         match redfox_key() {
             Ok(key) => {
                 let endpoint = redfox::request_for_url(&url)
@@ -1937,7 +1970,72 @@ fn capture_link_blocking(app: AppHandle, url: String) -> Result<Value, String> {
     } else {
         None
     };
-    let (metadata, method) = if let Some(value) = redfox_result {
+    let apify_result = if provider == "apify" {
+        match apify_key() {
+            Ok(key) => match apify::capture(&key, &url) {
+                Ok(capture) => {
+                    let directory = data_dir(&app)?.join("external-intelligence/raw");
+                    let raw_path = directory.join(format!("{capture_id}.json"));
+                    fs::write(
+                        &raw_path,
+                        serde_json::to_vec_pretty(&capture.raw)
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let connection = db(&app)?;
+                    external_item_id = external_intelligence::upsert_item(
+                        &connection,
+                        &new_id("external-item"),
+                        &capture.canonical,
+                        &captured_at,
+                        &timestamp_after_days(&captured_at, 30),
+                        &raw_path.to_string_lossy(),
+                    )?;
+                    external_intelligence::record_provider_call(
+                        &connection,
+                        &new_id("provider-call"),
+                        "apify",
+                        &capture.endpoint,
+                        None,
+                        &captured_at,
+                        true,
+                        Some(capture.status_code),
+                        1,
+                        None,
+                    )?;
+                    local_metadata_path = raw_path.to_string_lossy().to_string();
+                    capture_provider = "apify".into();
+                    Some(capture.canonical)
+                }
+                Err(error) => {
+                    let connection = db(&app)?;
+                    external_intelligence::record_provider_call(
+                        &connection,
+                        &new_id("provider-call"),
+                        "apify",
+                        "https://api.apify.com/v2/acts/apify~website-content-crawler/runs",
+                        None,
+                        &captured_at,
+                        false,
+                        None,
+                        0,
+                        Some(&error),
+                    )?;
+                    errors.push(format!("Apify: {error}"));
+                    None
+                }
+            },
+            Err(error) => {
+                errors.push(format!("Apify: {error}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let (metadata, method) = if let Some(value) = apify_result {
+        (value, "apify")
+    } else if let Some(value) = redfox_result {
         (value, "redfox")
     } else {
         match run_yt_dlp(&url) {
@@ -1976,6 +2074,7 @@ fn capture_link_blocking(app: AppHandle, url: String) -> Result<Value, String> {
     if external_item_id.is_empty()
         && redfox::platform_for_url(&url).is_some()
         && method != "link-only"
+        && method != "apify"
     {
         let mut canonical_item = redfox::normalize_response(&url, method, &metadata);
         if let Some(object) = canonical_item.as_object_mut() {
@@ -3287,11 +3386,20 @@ mod tests {
 
     #[test]
     fn capture_provider_config_never_contains_the_api_key() {
-        let config = capture_provider_config(true);
+        let config = capture_provider_config(true, true);
         let serialized = serde_json::to_string(&config).unwrap();
         assert!(config["providers"][0]["configured"].as_bool().unwrap());
+        assert_eq!(config["providers"][1]["id"], "apify");
+        assert!(
+            config["providers"][1]["supportedPlatforms"]
+                .as_array()
+                .unwrap()
+                .len()
+                >= 8
+        );
         assert!(!serialized.contains("apiKey"));
         assert!(!serialized.contains("REDFOX_API_KEY"));
+        assert!(!serialized.contains("APIFY_API_TOKEN"));
         assert!(!serialized.contains("secret"));
     }
 

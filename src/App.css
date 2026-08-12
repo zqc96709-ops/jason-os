@@ -54,3 +54,22 @@
 .app-shell.ai-open .ai-drawer{position:relative;top:auto;right:auto;bottom:auto;grid-area:ai;width:auto;height:calc(100vh - var(--header));min-height:0;overflow:hidden;z-index:10;box-shadow:none}
 .app-shell.ai-open .ai-chat{min-height:0}
 @media(max-width:1000px){.app-shell.ai-open{grid-template-columns:var(--sidebar) minmax(0,1fr) minmax(300px,36vw)}}
+
+/* Codex-style sidebar: collapse the rail completely, then reveal it from the left edge. */
+.app-shell.sidebar-collapsed{--sidebar:0px;grid-template-columns:0 minmax(0,1fr)}
+.app-shell.sidebar-collapsed .global-brand{position:relative;width:0;padding:0;border-right:0;overflow:visible}
+.app-shell.sidebar-collapsed .global-brand>.brand-mark,.app-shell.sidebar-collapsed .brand-copy{display:none}
+.app-shell.sidebar-collapsed .sidebar-toggle{position:fixed;left:10px;top:calc((var(--header) - 32px) / 2);z-index:45;border-color:var(--line);background:rgba(20,23,19,.92);box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.app-shell.sidebar-collapsed .sidebar{width:0;padding:0;border-right:0;overflow:hidden}
+.app-shell.sidebar-collapsed .global-search{margin-left:28px}
+.app-shell.sidebar-collapsed.sidebar-peek{--sidebar:224px}
+.app-shell.sidebar-collapsed.sidebar-peek .global-brand{width:auto;padding:0 12px;border-right:1px solid var(--line);overflow:visible}
+.app-shell.sidebar-collapsed.sidebar-peek .global-brand>.brand-mark,.app-shell.sidebar-collapsed.sidebar-peek .brand-copy{display:block}
+.app-shell.sidebar-collapsed.sidebar-peek .sidebar{width:auto;padding:16px 12px;border-right:1px solid var(--line);overflow-y:auto}
+.app-shell.sidebar-collapsed.sidebar-peek .sidebar>*{opacity:1;visibility:visible;pointer-events:auto}
+.app-shell.sidebar-collapsed.sidebar-peek .sidebar-toggle{position:static;box-shadow:none}
+
+/* Consistent soft corners for the main interaction surfaces. */
+button,input,textarea,select{border-radius:var(--radius)}
+.work-panel,.section-intro,.metric-strip,.finance-hero,.finance-tabs,.external-tabs,.external-panel,.radar-panel,.radar-top,.radar-feed,.focus-banner,.today-hero,.workspace-hero,.decision-evidence,.ai-drawer,.record-drawer,.record-modal,.search-overlay,.command-palette,.timer-start-modal,.ai-composer,.ai-action-card,.outcome-grid article,.account-grid article,.category-list button,.project-grid article,.people-grid article,.two-column>section{border-radius:var(--radius)}
+.metric-strip{overflow:hidden}

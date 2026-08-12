@@ -47,6 +47,7 @@ function App() {
   const [records, setRecords] = useState<RecordData[]>([])
   const [view, setView] = useState<View>('command')
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('jason-os-sidebar-open') !== 'false')
+  const [sidebarPeek, setSidebarPeek] = useState(false)
   const [editing, setEditing] = useState<EditState | null>(null)
   const [detailId, setDetailId] = useState<string | null>(null)
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
@@ -185,10 +186,17 @@ function App() {
   ]
   const pageTitle = view === 'aiNews' ? 'AI News Radar' : nav.flatMap((group) => group.items).find((item) => item.view === view)?.label || (view === 'settings' ? '设置' : 'Jason OS')
 
-  return <div className={`app-shell ${sidebarOpen ? "" : "sidebar-collapsed"} ${aiOpen ? "ai-open" : ""}`}>
+  const effectiveSidebarOpen = sidebarOpen || sidebarPeek
+  const toggleSidebar = () => { setSidebarPeek(false); setSidebarOpen((open) => !open) }
+  const handleShellPointer = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (sidebarOpen) return
+    if (event.clientX <= 14) setSidebarPeek(true)
+    else if (sidebarPeek && event.clientX > 236) setSidebarPeek(false)
+  }
+  return <div className={`app-shell ${effectiveSidebarOpen ? "" : "sidebar-collapsed"} ${sidebarPeek ? "sidebar-peek" : ""} ${aiOpen ? "ai-open" : ""}`} onPointerMove={handleShellPointer}>
     <GlobalHeader
       query={searchQuery} onQuery={(value) => { setSearchQuery(value); setSearchOpen(true) }} onSearchFocus={() => setSearchOpen(true)}
-      sidebarOpen={sidebarOpen} onToggleSidebar={() => setSidebarOpen((open) => !open)} onAiNews={() => setView('aiNews')} aiNewsActive={view === 'aiNews'} onAi={() => setAiOpen(true)} onPalette={() => setPaletteOpen(true)} aiConfigured={Boolean(aiConfig?.configured)}
+      sidebarOpen={effectiveSidebarOpen} onToggleSidebar={toggleSidebar} onAiNews={() => setView('aiNews')} aiNewsActive={view === 'aiNews'} onAi={() => setAiOpen(true)} onPalette={() => setPaletteOpen(true)} aiConfigured={Boolean(aiConfig?.configured)}
     />
     <aside className="sidebar">
       <button className="quick-capture" onClick={() => openCreate('inbox')}><span>＋</span><div><strong>快速收集</strong><small>⌘ ⇧ Space</small></div></button>

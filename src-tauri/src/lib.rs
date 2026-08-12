@@ -1,6 +1,7 @@
 mod apify;
 mod external_intelligence;
 mod finance;
+mod mental_models;
 mod redfox;
 mod scrapecreators;
 mod tikhub;
@@ -579,6 +580,8 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
     }
     external_intelligence::migrate(&connection, &now())?;
     finance::migrate(&connection, &now())?;
+    mental_models::migrate(&connection, &now())?;
+    mental_models::migrate_followups(&connection, &now())?;
     Ok(connection)
 }
 

@@ -49,6 +49,8 @@
 .form-error{margin:0 18px 12px;padding:9px;border:1px solid #72493d;background:#2b1d19;color:#e9aa94;font-size:8px}
 
 /* AI 助理打开时作为右侧布局栏，主内容让出空间而不是被覆盖。 */
-.app-shell.ai-open{grid-template-columns:var(--sidebar) minmax(0,1fr) minmax(340px,430px);grid-template-areas:"header header header" "sidebar main ai"}
-.app-shell.ai-open .ai-drawer{position:relative;top:auto;right:auto;bottom:auto;grid-area:ai;width:auto;height:auto;min-height:0;z-index:10;box-shadow:none}
+.app-shell.ai-open{grid-template-columns:var(--sidebar) minmax(0,1fr) minmax(340px,430px);grid-template-areas:"header header header" "sidebar main ai";height:100vh;min-height:100vh;overflow:hidden}
+.app-shell.ai-open .main-content{min-height:0;max-height:calc(100vh - var(--header));overflow-y:auto}
+.app-shell.ai-open .ai-drawer{position:relative;top:auto;right:auto;bottom:auto;grid-area:ai;width:auto;height:calc(100vh - var(--header));min-height:0;overflow:hidden;z-index:10;box-shadow:none}
+.app-shell.ai-open .ai-chat{min-height:0}
 @media(max-width:1000px){.app-shell.ai-open{grid-template-columns:var(--sidebar) minmax(0,1fr) minmax(300px,36vw)}}

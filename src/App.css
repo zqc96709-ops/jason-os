@@ -73,3 +73,15 @@
 button,input,textarea,select{border-radius:var(--radius)}
 .work-panel,.section-intro,.metric-strip,.finance-hero,.finance-tabs,.external-tabs,.external-panel,.radar-panel,.radar-top,.radar-feed,.focus-banner,.today-hero,.workspace-hero,.decision-evidence,.ai-drawer,.record-drawer,.record-modal,.search-overlay,.command-palette,.timer-start-modal,.ai-composer,.ai-action-card,.outcome-grid article,.account-grid article,.category-list button,.project-grid article,.people-grid article,.two-column>section{border-radius:var(--radius)}
 .metric-strip{overflow:hidden}
+
+/* AI 助理默认保持原宽度，可从与主内容的边界拖拽调整。 */
+:root{--ai-width:430px}
+.app-shell{position:relative}
+.app-shell.ai-open{grid-template-columns:var(--sidebar) minmax(0,1fr) var(--ai-width)}
+.app-shell.ai-open.sidebar-collapsed{grid-template-columns:0 minmax(0,1fr) var(--ai-width);grid-template-areas:"header header header" "sidebar main ai"}
+.app-shell.ai-open.sidebar-collapsed.sidebar-peek{grid-template-columns:224px minmax(0,1fr) var(--ai-width)}
+.ai-resize-handle{position:absolute;top:var(--header);right:calc(var(--ai-width) - 4px);bottom:0;z-index:40;width:8px;cursor:col-resize;background:transparent}
+.ai-resize-handle:hover,.app-shell.ai-resizing .ai-resize-handle{background:rgba(196,227,138,.28)}
+.app-shell.ai-resizing{cursor:col-resize;user-select:none}
+.app-shell.ai-resizing .ai-drawer,.app-shell.ai-resizing .main-content{pointer-events:none}
+@media(max-width:1000px){.app-shell.ai-open{grid-template-columns:var(--sidebar) minmax(0,1fr) var(--ai-width)}.app-shell.ai-open.sidebar-collapsed{grid-template-columns:0 minmax(0,1fr) var(--ai-width)}}

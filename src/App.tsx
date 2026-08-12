@@ -48,6 +48,8 @@ function App() {
   const [view, setView] = useState<View>('command')
   const [sidebarOpen, setSidebarOpen] = useState(() => localStorage.getItem('jason-os-sidebar-open') !== 'false')
   const [sidebarPeek, setSidebarPeek] = useState(false)
+  const [aiWidth, setAiWidth] = useState(() => { const value = Number(localStorage.getItem('jason-os-ai-width')); return Number.isFinite(value) ? Math.min(620, Math.max(320, value)) : 430 })
+  const [aiResizing, setAiResizing] = useState(false)
   const [editing, setEditing] = useState<EditState | null>(null)
   const [detailId, setDetailId] = useState<string | null>(null)
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
@@ -79,6 +81,15 @@ function App() {
   useEffect(() => { api.initialize().then(async () => { await api.cleanupExternalCache(); await refresh(); await refreshSettings() }).catch((error) => showNotice(String(error), 'danger')) }, [])
   useEffect(() => { localStorage.setItem('jason-os-ai-chat', JSON.stringify(chat.slice(-20))) }, [chat])
   useEffect(() => { localStorage.setItem('jason-os-sidebar-open', String(sidebarOpen)) }, [sidebarOpen])
+  useEffect(() => { localStorage.setItem('jason-os-ai-width', String(aiWidth)) }, [aiWidth])
+  useEffect(() => {
+    if (!aiResizing) return
+    const move = (event: PointerEvent) => setAiWidth(Math.min(620, Math.max(320, window.innerWidth - event.clientX)))
+    const stop = () => setAiResizing(false)
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', stop, { once: true })
+    return () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', stop) }
+  }, [aiResizing])
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       if (event.metaKey && event.key.toLowerCase() === 'k') { event.preventDefault(); setPaletteOpen(true) }
@@ -193,7 +204,7 @@ function App() {
     if (event.clientX <= 14) setSidebarPeek(true)
     else if (sidebarPeek && event.clientX > 236) setSidebarPeek(false)
   }
-  return <div className={`app-shell ${effectiveSidebarOpen ? "" : "sidebar-collapsed"} ${sidebarPeek ? "sidebar-peek" : ""} ${aiOpen ? "ai-open" : ""}`} onPointerMove={handleShellPointer}>
+  return <div className={`app-shell ${effectiveSidebarOpen ? "" : "sidebar-collapsed"} ${sidebarPeek ? "sidebar-peek" : ""} ${aiOpen ? "ai-open" : ""} ${aiResizing ? "ai-resizing" : ""}`} style={{ "--ai-width": `${aiWidth}px` } as React.CSSProperties} onPointerMove={handleShellPointer}>
     <GlobalHeader
       query={searchQuery} onQuery={(value) => { setSearchQuery(value); setSearchOpen(true) }} onSearchFocus={() => setSearchOpen(true)}
       sidebarOpen={effectiveSidebarOpen} onToggleSidebar={toggleSidebar} onAiNews={() => setView('aiNews')} aiNewsActive={view === 'aiNews'} onAi={() => setAiOpen(true)} onPalette={() => setPaletteOpen(true)} aiConfigured={Boolean(aiConfig?.configured)}
@@ -224,7 +235,7 @@ function App() {
     {notice && <div className={`toast ${notice.tone === 'danger' ? 'danger' : ''}`}>{notice.text}</div>}
     {searchOpen && <SearchOverlay query={searchQuery} results={searchResults} selectedEntities={searchEntities} onToggleEntity={(entity) => setSearchEntities((current) => current.includes(entity) ? current.filter((item) => item !== entity) : [...current, entity])} onOpen={openRecord} onClose={() => setSearchOpen(false)} />}
     {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} actions={paletteActions({ setSearchOpen, setPaletteOpen, openCreate, startTimer, setAiOpen, setView })} />}
-    {aiOpen && <AiDrawer config={aiConfig} chat={chat} draft={aiDraft} busy={aiBusy} context={contextRecords} onDraft={setAiDraft} onSend={sendAi} onConfirmAction={confirmAiAction} onCancelAction={cancelAiAction} onViewAction={viewAiActionResult} onSelectModel={(provider, model) => saveAiProvider(provider, '', model)} onClose={() => setAiOpen(false)} onSettings={() => { setAiOpen(false); setView('settings') }} />}
+    {aiOpen && <><div className="ai-resize-handle" role="separator" aria-label="调整 AI 助理宽度" onPointerDown={(event) => { event.preventDefault(); setAiResizing(true) }} /><AiDrawer config={aiConfig} chat={chat} draft={aiDraft} busy={aiBusy} context={contextRecords} onDraft={setAiDraft} onSend={sendAi} onConfirmAction={confirmAiAction} onCancelAction={cancelAiAction} onViewAction={viewAiActionResult} onSelectModel={(provider, model) => saveAiProvider(provider, '', model)} onClose={() => setAiOpen(false)} onSettings={() => { setAiOpen(false); setView('settings') }} /></>}
     {timerStart && <TimerStartModal initial={timerStart} records={records} onClose={() => setTimerStart(null)} onStart={startTimerNow} />}
     {editing && <RecordModal config={editing.config} record={editing.record} initial={editing.initial} records={records} onClose={() => setEditing(null)} onSave={saveRecord} />}
     {detailId && <RecordDrawer record={records.find((record) => record.id === detailId)} records={records} onClose={() => setDetailId(null)} onEdit={(record) => setEditing({ config: configFor(record.entity), record })} onArchive={archiveRecord} onCreate={openCreate} onOpen={openRecord} onStartTimer={startTimer} />}

@@ -1588,7 +1588,7 @@ fn provider_models(provider: &str) -> &'static [&'static str] {
     match provider {
         "deepseek" => &["deepseek-v4-pro", "deepseek-v4-flash"],
         "minimax" => &["MiniMax-M3"],
-        "volc-agent-plan" => &["kimi-k3"],
+        "volc-agent-plan" => &["kimi-k3", "deepseek-v4-flash", "glm-5.2", "minimax-m3", "doubao-seed-evolving", "kimi-k2.7-code"],
         _ => &["gpt-5.5"],
     }
 }
@@ -2418,6 +2418,11 @@ fn provider_config(connection: &Connection, provider: &str) -> Result<Value, Str
                 "deepseek-v4-flash" => "低延迟高性价比",
                 "MiniMax-M3" => "最新旗舰 Agent 与推理模型",
                 "kimi-k3" => "Agent Plan Medium 当前文本模型",
+                "deepseek-v4-flash" => "低延迟高性价比",
+                "glm-5.2" => "智谱 GLM 通用大模型",
+                "minimax-m3" => "MiniMax 旗舰 Agent 与推理模型",
+                "doubao-seed-evolving" => "豆包 Seed 自进化模型",
+                "kimi-k2.7-code" => "Kimi 代码专用模型（需开启 thinking）",
                 _ => "HackStart 模型",
             };
             json!({"id": model, "label": model, "description": description})
@@ -2510,7 +2515,10 @@ fn call_provider(
         .map_err(|e| e.to_string())?;
     let started = Instant::now();
     let (request, payload) = if provider == "volc-agent-plan" {
-        let payload = json!({"model": model, "instructions": system, "input": messages, "max_output_tokens": max_tokens, "thinking": {"type": "disabled"}});
+        let mut payload = json!({"model": model, "instructions": system, "input": messages, "max_output_tokens": max_tokens});
+        if model != "kimi-k2.7-code" {
+            payload["thinking"] = json!({"type": "disabled"});
+        }
         (
             client.post(provider_base_url(provider)).bearer_auth(key),
             payload,
@@ -3871,7 +3879,7 @@ mod tests {
             provider_base_url("minimax"),
             "https://api.minimaxi.com/anthropic/v1/messages"
         );
-        assert_eq!(provider_models("volc-agent-plan"), &["kimi-k3"]);
+        assert_eq!(provider_models("volc-agent-plan"), &["kimi-k3", "deepseek-v4-flash", "glm-5.2", "minimax-m3", "doubao-seed-evolving", "kimi-k2.7-code"]);
         assert_eq!(
             provider_base_url("volc-agent-plan"),
             "https://ark.cn-beijing.volces.com/api/plan/v3/responses"

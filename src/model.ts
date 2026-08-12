@@ -185,7 +185,7 @@ export const entities: EntityConfig[] = [
     { key: 'name', label: '名称' }, { key: 'type', label: '类型', type: 'select', options: [option('LINK', '固定链接'), option('KEYWORD', '关键词'), option('ACCOUNT', '账号'), option('COMPETITOR', '竞品'), option('MARKET', '市场'), option('TOPIC', '主题')] },
     { key: 'platform', label: '平台', type: 'select', options: ['网页', '微信公众号', '抖音', '小红书', 'X', 'Instagram', 'Facebook', 'Reddit', 'TikTok', 'YouTube'] }, { key: 'query', label: '关键词 / 账号' }, { key: 'url', label: '公开链接' },
     { key: 'status', label: '状态', type: 'select', options: [option('active', '启用'), option('paused', '暂停'), option('unsupported', '接口待接入')] }, { key: 'pollInterval', label: '同步频率', type: 'select', options: [option('manual', '仅手动'), option('daily', '应用打开时每日一次')] },
-    { key: 'providerPreference', label: '采集服务', type: 'select', options: [option('auto', '自动选择'), option('redfox', 'RedFoxHub'), option('apify', 'Apify')] }, { key: 'lastPolledAt', label: '最近同步', type: 'datetime-local' },
+    { key: 'providerPreference', label: '采集服务', type: 'select', options: [option('auto', '自动选择'), option('redfox', 'RedFoxHub'), option('apify', 'Apify'), option('tikhub', 'TikHub'), option('scrapecreators', 'Scrape Creators')] }, { key: 'lastPolledAt', label: '最近同步', type: 'datetime-local' },
     { key: 'goalId', label: '目标', relation: 'goals' }, { key: 'projectId', label: '项目', relation: 'projects' },
   ] },
   { entity: 'signals', label: '外部信号', singular: '外部信号', icon: '⌁', titleKey: 'title', description: '由可追溯的外部变化形成，等待观察、验证或进入决策。', fields: [

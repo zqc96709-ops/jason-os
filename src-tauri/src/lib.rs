@@ -2,6 +2,8 @@ mod apify;
 mod external_intelligence;
 mod finance;
 mod redfox;
+mod scrapecreators;
+mod tikhub;
 
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1619,11 +1621,18 @@ fn ensure_external_source_capacity(
     Ok(())
 }
 
-fn capture_provider_config(redfox_configured: bool, apify_configured: bool) -> Value {
+fn capture_provider_config(
+    redfox_configured: bool,
+    apify_configured: bool,
+    tikhub_configured: bool,
+    scrapecreators_configured: bool,
+) -> Value {
     json!({
         "providers": [
             {"id":"redfox", "label":"RedFoxHub", "configured":redfox_configured, "supportedPlatforms":["微信公众号","抖音","小红书"], "automaticSync":false, "mediaDownload":false},
-            {"id":"apify", "label":"Apify", "configured":apify_configured, "supportedPlatforms":["网页","微信公众号","抖音","小红书","X","Instagram","Facebook","Reddit","TikTok","YouTube"], "automaticSync":false, "mediaDownload":false}
+            {"id":"apify", "label":"Apify", "configured":apify_configured, "supportedPlatforms":["网页","微信公众号","抖音","小红书","X","Instagram","Facebook","Reddit","TikTok","YouTube"], "automaticSync":false, "mediaDownload":false},
+            {"id":"tikhub", "label":"TikHub", "configured":tikhub_configured, "supportedPlatforms":["抖音","TikTok","小红书","X","Instagram","Reddit","YouTube","微信公众号"], "automaticSync":false, "mediaDownload":false},
+            {"id":"scrapecreators", "label":"Scrape Creators", "configured":scrapecreators_configured, "supportedPlatforms":["TikTok","Instagram","YouTube","Facebook","X","Reddit"], "automaticSync":false, "mediaDownload":false}
         ]
     })
 }
@@ -1656,6 +1665,34 @@ fn apify_key() -> Result<String, String> {
         .ok_or("尚未配置 Apify API Token".to_string())
 }
 
+fn tikhub_key() -> Result<String, String> {
+    if let Ok(value) = std::env::var("TIKHUB_API_KEY") {
+        if !value.trim().is_empty() {
+            return Ok(value);
+        }
+    }
+    read_secrets()?
+        .get("tikhub")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .ok_or("尚未配置 TikHub API Key".into())
+}
+
+fn scrapecreators_key() -> Result<String, String> {
+    if let Ok(value) = std::env::var("SCRAPE_CREATORS_API_KEY") {
+        if !value.trim().is_empty() {
+            return Ok(value);
+        }
+    }
+    read_secrets()?
+        .get("scrapecreators")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .ok_or("尚未配置 Scrape Creators API Key".into())
+}
+
 fn timestamp_after_days(value: &str, days: i64) -> String {
     let base = value.parse::<i64>().unwrap_or_default();
     (base + days * 86_400_000).to_string()
@@ -1683,23 +1720,35 @@ fn get_capture_provider_config() -> Result<Value, String> {
     Ok(capture_provider_config(
         redfox_key().is_ok(),
         apify_key().is_ok(),
+        tikhub_key().is_ok(),
+        scrapecreators_key().is_ok(),
     ))
 }
 
 #[tauri::command]
 fn configure_capture_provider(provider: String, api_key: String) -> Result<Value, String> {
-    if !["redfox", "apify"].contains(&provider.as_str()) {
-        return Err("当前只支持配置 RedFoxHub 或 Apify".into());
+    if !["redfox", "apify", "tikhub", "scrapecreators"].contains(&provider.as_str()) {
+        return Err("当前只支持配置 RedFoxHub、Apify、TikHub 或 Scrape Creators".into());
     }
     let key = if !api_key.trim().is_empty() {
         api_key.trim().to_string()
     } else if provider == "redfox" {
         redfox_key()?
-    } else {
+    } else if provider == "apify" {
         apify_key()?
+    } else if provider == "tikhub" {
+        tikhub_key()?
+    } else {
+        scrapecreators_key()?
     };
     if provider == "apify" {
         apify::test_token(&key)?;
+    }
+    if provider == "tikhub" {
+        tikhub::test_token(&key)?;
+    }
+    if provider == "scrapecreators" {
+        scrapecreators::test_token(&key)?;
     }
     store_provider_key(&provider, &key)?;
     get_capture_provider_config()
@@ -1713,11 +1762,10 @@ async fn test_capture_provider(provider: String, url: String) -> Result<Value, S
             let capture = redfox::capture(&redfox_key()?, url.trim())?;
             return Ok(json!({"ok":true,"provider":"redfox","latencyMs":started.elapsed().as_millis(),"content":capture.canonical}));
         }
-        if provider == "apify" {
-            let result = apify::test_token(&apify_key()?)?;
-            return Ok(json!({"ok":true,"provider":"apify","latencyMs":result["latencyMs"],"content":result}));
-        }
-        Err("当前只支持测试 RedFoxHub 或 Apify".into())
+        if provider == "apify" { let result = apify::test_token(&apify_key()?)?; return Ok(json!({"ok":true,"provider":"apify","latencyMs":result["latencyMs"],"content":result})); }
+        if provider == "tikhub" { let result = tikhub::test_token(&tikhub_key()?)?; return Ok(json!({"ok":true,"provider":"tikhub","latencyMs":result["latencyMs"],"content":result})); }
+        if provider == "scrapecreators" { let result = scrapecreators::test_token(&scrapecreators_key()?)?; return Ok(json!({"ok":true,"provider":"scrapecreators","latencyMs":result["latencyMs"],"content":result})); }
+        Err("当前只支持测试 RedFoxHub、Apify、TikHub 或 Scrape Creators".into())
     }).await.map_err(|error| format!("采集服务后台任务失败：{error}"))?
 }
 
@@ -2033,7 +2081,111 @@ fn capture_link_blocking(app: AppHandle, url: String, provider: String) -> Resul
     } else {
         None
     };
-    let (metadata, method) = if let Some(value) = apify_result {
+    let tikhub_result = if provider == "tikhub" {
+        match tikhub_key() {
+            Ok(key) => match tikhub::capture(&key, &url) {
+                Ok(capture) => {
+                    let directory = data_dir(&app)?.join("external-intelligence/raw");
+                    let raw_path = directory.join(format!("{capture_id}.json"));
+                    fs::write(
+                        &raw_path,
+                        serde_json::to_vec_pretty(&capture.raw)
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let connection = db(&app)?;
+                    external_item_id = external_intelligence::upsert_item(
+                        &connection,
+                        &new_id("external-item"),
+                        &capture.canonical,
+                        &captured_at,
+                        &timestamp_after_days(&captured_at, 30),
+                        &raw_path.to_string_lossy(),
+                    )?;
+                    external_intelligence::record_provider_call(
+                        &connection,
+                        &new_id("provider-call"),
+                        "tikhub",
+                        &capture.endpoint,
+                        None,
+                        &captured_at,
+                        true,
+                        Some(capture.status_code),
+                        1,
+                        None,
+                    )?;
+                    local_metadata_path = raw_path.to_string_lossy().to_string();
+                    capture_provider = "tikhub".into();
+                    Some(capture.canonical)
+                }
+                Err(error) => {
+                    errors.push(format!("TikHub: {error}"));
+                    None
+                }
+            },
+            Err(error) => {
+                errors.push(format!("TikHub: {error}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let scrapecreators_result = if provider == "scrapecreators" {
+        match scrapecreators_key() {
+            Ok(key) => match scrapecreators::capture(&key, &url) {
+                Ok(capture) => {
+                    let directory = data_dir(&app)?.join("external-intelligence/raw");
+                    let raw_path = directory.join(format!("{capture_id}.json"));
+                    fs::write(
+                        &raw_path,
+                        serde_json::to_vec_pretty(&capture.raw)
+                            .map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let connection = db(&app)?;
+                    external_item_id = external_intelligence::upsert_item(
+                        &connection,
+                        &new_id("external-item"),
+                        &capture.canonical,
+                        &captured_at,
+                        &timestamp_after_days(&captured_at, 30),
+                        &raw_path.to_string_lossy(),
+                    )?;
+                    external_intelligence::record_provider_call(
+                        &connection,
+                        &new_id("provider-call"),
+                        "scrapecreators",
+                        &capture.endpoint,
+                        None,
+                        &captured_at,
+                        true,
+                        Some(capture.status_code),
+                        1,
+                        None,
+                    )?;
+                    local_metadata_path = raw_path.to_string_lossy().to_string();
+                    capture_provider = "scrapecreators".into();
+                    Some(capture.canonical)
+                }
+                Err(error) => {
+                    errors.push(format!("Scrape Creators: {error}"));
+                    None
+                }
+            },
+            Err(error) => {
+                errors.push(format!("Scrape Creators: {error}"));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let (metadata, method) = if let Some(value) = tikhub_result {
+        (value, "tikhub")
+    } else if let Some(value) = scrapecreators_result {
+        (value, "scrapecreators")
+    } else if let Some(value) = apify_result {
         (value, "apify")
     } else if let Some(value) = redfox_result {
         (value, "redfox")
@@ -3386,7 +3538,7 @@ mod tests {
 
     #[test]
     fn capture_provider_config_never_contains_the_api_key() {
-        let config = capture_provider_config(true, true);
+        let config = capture_provider_config(true, true, true, true);
         let serialized = serde_json::to_string(&config).unwrap();
         assert!(config["providers"][0]["configured"].as_bool().unwrap());
         assert_eq!(config["providers"][1]["id"], "apify");

@@ -19,7 +19,16 @@ export function buildAgentContext({ currentRoute, records, selectedProjectId, de
     currentUser: 'local-user',
     selectedItems: [selectedProjectId, detailId].filter((value): value is string => Boolean(value)),
     recentConversation: conversation.slice(-10).map(({ role, content }) => ({ role, content })),
-    recentActions: records.filter((record) => record.entity === 'agentActions').slice(0, 10).map((record) => ({ ...record })),
+    recentActions: records.filter((record) => record.entity === 'agentActions').slice(0, 10).map((record) => ({
+      id: record.id,
+      entity: record.entity,
+      actionType: record.actionType,
+      intent: record.intent,
+      status: record.status,
+      previewTitle: record.previewTitle,
+      createdAt: record.createdAt,
+      completedAt: record.completedAt,
+    })),
     localDate: new Date().toLocaleDateString('en-CA'),
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   }

@@ -1588,7 +1588,14 @@ fn provider_models(provider: &str) -> &'static [&'static str] {
     match provider {
         "deepseek" => &["deepseek-v4-pro", "deepseek-v4-flash"],
         "minimax" => &["MiniMax-M3"],
-        "volc-agent-plan" => &["kimi-k3", "deepseek-v4-flash", "glm-5.2", "minimax-m3", "doubao-seed-evolving", "kimi-k2.7-code"],
+        "volc-agent-plan" => &[
+            "kimi-k3",
+            "deepseek-v4-flash",
+            "glm-5.2",
+            "minimax-m3",
+            "doubao-seed-evolving",
+            "kimi-k2.7-code",
+        ],
         _ => &["gpt-5.5"],
     }
 }
@@ -2415,7 +2422,6 @@ fn provider_config(connection: &Connection, provider: &str) -> Result<Value, Str
         .map(|model| {
             let description = match *model {
                 "deepseek-v4-pro" => "高质量复杂推理",
-                "deepseek-v4-flash" => "低延迟高性价比",
                 "MiniMax-M3" => "最新旗舰 Agent 与推理模型",
                 "kimi-k3" => "Agent Plan Medium 当前文本模型",
                 "deepseek-v4-flash" => "低延迟高性价比",
@@ -2509,10 +2515,13 @@ fn call_provider(
     messages: &[Value],
     max_tokens: u64,
 ) -> Result<(Value, u128), String> {
-    let client = reqwest::blocking::Client::builder()
+    let mut client_builder = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|e| e.to_string())?;
+        .connect_timeout(Duration::from_secs(15));
+    if provider == "minimax" {
+        client_builder = client_builder.http1_only();
+    }
+    let client = client_builder.build().map_err(|e| e.to_string())?;
     let started = Instant::now();
     let (request, payload) = if provider == "volc-agent-plan" {
         let mut payload = json!({"model": model, "instructions": system, "input": messages, "max_output_tokens": max_tokens});
@@ -3247,6 +3256,44 @@ async fn ask_chief(
     .map_err(|error| format!("AI 后台任务失败：{error}"))?
 }
 
+fn compact_for_ai(value: &Value, depth: usize) -> Value {
+    match value {
+        Value::String(text) => {
+            let limit = 12_000;
+            if text.chars().count() > limit {
+                let prefix = text.chars().take(limit).collect::<String>();
+                Value::String(format!("{prefix}\n[内容已省略]"))
+            } else {
+                Value::String(text.clone())
+            }
+        }
+        Value::Array(items) => {
+            if depth >= 5 {
+                return Value::String("[嵌套内容已省略]".into());
+            }
+            Value::Array(
+                items
+                    .iter()
+                    .take(30)
+                    .map(|item| compact_for_ai(item, depth + 1))
+                    .collect(),
+            )
+        }
+        Value::Object(object) => {
+            if depth >= 5 {
+                return Value::String("[嵌套内容已省略]".into());
+            }
+            Value::Object(
+                object
+                    .iter()
+                    .map(|(key, item)| (key.clone(), compact_for_ai(item, depth + 1)))
+                    .collect(),
+            )
+        }
+        _ => value.clone(),
+    }
+}
+
 fn ask_chief_blocking(
     app: AppHandle,
     question: String,
@@ -3259,7 +3306,7 @@ fn ask_chief_blocking(
     let provider = active_provider(&connection)?;
     let key = provider_key(&provider)?;
     let model = selected_model(&connection, &provider)?;
-    let page_context = context.unwrap_or_else(|| json!({}));
+    let page_context = compact_for_ai(&context.unwrap_or_else(|| json!({})), 0);
     let mut local_context = search_filtered(&connection, &question, &[])?;
     let mut context_ids = page_context
         .get("selectedItems")
@@ -3350,6 +3397,10 @@ fn ask_chief_blocking(
         }));
     }
     local_context.truncate(48);
+    let local_context = local_context
+        .iter()
+        .map(|record| compact_for_ai(record, 0))
+        .collect::<Vec<_>>();
     let context_json =
         serde_json::to_string_pretty(&local_context).map_err(|error| error.to_string())?;
     let schema_json = serde_json::to_string(&schema_registry.unwrap_or_else(|| json!([])))
@@ -3879,7 +3930,17 @@ mod tests {
             provider_base_url("minimax"),
             "https://api.minimaxi.com/anthropic/v1/messages"
         );
-        assert_eq!(provider_models("volc-agent-plan"), &["kimi-k3", "deepseek-v4-flash", "glm-5.2", "minimax-m3", "doubao-seed-evolving", "kimi-k2.7-code"]);
+        assert_eq!(
+            provider_models("volc-agent-plan"),
+            &[
+                "kimi-k3",
+                "deepseek-v4-flash",
+                "glm-5.2",
+                "minimax-m3",
+                "doubao-seed-evolving",
+                "kimi-k2.7-code"
+            ]
+        );
         assert_eq!(
             provider_base_url("volc-agent-plan"),
             "https://ark.cn-beijing.volces.com/api/plan/v3/responses"

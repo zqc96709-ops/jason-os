@@ -185,7 +185,7 @@ function App() {
   ]
   const pageTitle = view === 'aiNews' ? 'AI News Radar' : nav.flatMap((group) => group.items).find((item) => item.view === view)?.label || (view === 'settings' ? '设置' : 'Jason OS')
 
-  return <div className={`app-shell ${sidebarOpen ? "" : "sidebar-collapsed"}`}>
+  return <div className={`app-shell ${sidebarOpen ? "" : "sidebar-collapsed"} ${aiOpen ? "ai-open" : ""}`}>
     <GlobalHeader
       query={searchQuery} onQuery={(value) => { setSearchQuery(value); setSearchOpen(true) }} onSearchFocus={() => setSearchOpen(true)}
       sidebarOpen={sidebarOpen} onToggleSidebar={() => setSidebarOpen((open) => !open)} onAiNews={() => setView('aiNews')} aiNewsActive={view === 'aiNews'} onAi={() => setAiOpen(true)} onPalette={() => setPaletteOpen(true)} aiConfigured={Boolean(aiConfig?.configured)}

@@ -36,6 +36,7 @@ export type DecisionAnalysis = {
   options: string[]
   recommendation: string
   confidence: number
+  ceoDecision?: string
 }
 
 const DECISION_TYPES: { type: string; label: string; lens: string; keywords: string[]; impact: ImpactLevel; urgency: UrgencyLevel; reversibility: Reversibility }[] = [
@@ -84,7 +85,30 @@ export const urgencyLabel = (value: UrgencyLevel) => ({ low: '低', medium: '中
 export const reversibilityLabel = (value: Reversibility) => ({ reversible: '可逆', partially: '部分可逆', irreversible: '不可逆' }[value])
 
 const active = (records: RecordData[], entity: string) => records.filter((record) => record.entity === entity && record.status !== 'archived')
-const bySlug = (records: RecordData[], slug: string) => records.find((record) => String(record.slug) === slug)
+const MODEL_ALIASES: Record<string, string[]> = {
+  'first-principles': ['第一性原理'],
+  inversion: ['逆向思维'],
+  'second-order-thinking': ['二阶思维'],
+  'probabilistic-thinking': ['概率思维'],
+  'base-rate': ['基准率思维'],
+  'opportunity-cost': ['机会成本'],
+  'circle-of-competence': ['能力圈'],
+  'margin-of-safety': ['安全边际'],
+  incentives: ['激励机制'],
+  'feedback-loop': ['反馈回路'],
+  'reversible-irreversible': ['可逆/不可逆决策', '可逆 / 不可逆决策'],
+  jtbd: ['Jobs to Be Done', 'JTBD'],
+  'information-value': ['信息价值'],
+  'strategic-inflection': ['战略拐点'],
+  'five-forces': ['五力模型', '波特五力'],
+  'strategy-kernel': ['战略内核'],
+  'value-chain': ['价值链'],
+}
+
+const bySlug = (records: RecordData[], slug: string) => {
+  const aliases = [slug, ...(MODEL_ALIASES[slug] || [])].map((item) => item.toLowerCase().replaceAll(' ', ''))
+  return records.find((record) => [record.slug, record.name].some((value) => aliases.includes(String(value || '').toLowerCase().replaceAll(' ', ''))))
+}
 
 export function runDecisionEngine(question: string, records: RecordData[]): DecisionAnalysis {
   const classification = classifyDecision(question)

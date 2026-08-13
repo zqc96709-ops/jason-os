@@ -60,3 +60,18 @@ describe('runDecisionEngine', () => {
     expect(result.confidence).toBeGreaterThan(0)
   })
 })
+
+describe('model slug compatibility', () => {
+  it('兼容真实数据库中的中文 slug 模型', () => {
+    const chineseRecords: RecordData[] = [
+      { id: 'cn-1', entity: 'mentalModels', slug: '概率思维', name: '概率思维', status: 'active', createdAt: '', updatedAt: '' },
+      { id: 'cn-2', entity: 'mentalModels', slug: '基准率思维', name: '基准率思维', status: 'active', createdAt: '', updatedAt: '' },
+      { id: 'cn-3', entity: 'mentalModels', slug: '逆向思维', name: '逆向思维', status: 'active', createdAt: '', updatedAt: '' },
+      { id: 'cn-4', entity: 'mentalModels', slug: '机会成本', name: '机会成本', status: 'active', createdAt: '', updatedAt: '' },
+      { id: 'cn-5', entity: 'mentalModels', slug: '安全边际', name: '安全边际', status: 'active', createdAt: '', updatedAt: '' },
+      { id: 'lens-investment', entity: 'decisionLenses', slug: 'investment', name: '投资决策', recommendedModelSlugs: 'probabilistic-thinking,base-rate,inversion,opportunity-cost,margin-of-safety', recommendedFrameworkSlugs: '', status: 'active', createdAt: '', updatedAt: '' },
+    ]
+    const result = runDecisionEngine('我要不要投入100万元做一个新项目？', chineseRecords)
+    expect(result.models.map(({ model }) => model.name)).toEqual(['概率思维', '基准率思维', '逆向思维', '机会成本', '安全边际'])
+  })
+})

@@ -5,6 +5,7 @@ export type Entity =
   | 'decisions' | 'inbox' | 'events' | 'people' | 'dataRecords' | 'attachments' | 'timelineEvents' | 'agentRuns' | 'agentActions'
   | 'externalSources' | 'signals' | 'opportunities' | 'intelligenceBriefs'
   | 'financialAccounts' | 'financialCategories' | 'financialTransactions'
+  | 'decisionFrameworks' | 'ceoPrinciples' | 'decisionLenses'
 
 export type RecordData = Record<string, unknown> & {
   id: string
@@ -233,6 +234,15 @@ export const entities: EntityConfig[] = [
   ] },
   { entity: 'agentRuns', label: 'AI 运行', singular: 'AI 运行', icon: 'AI', titleKey: 'input', description: 'AI 分析的审计记录。', fields: [] },
   { entity: 'agentActions', label: 'AI 操作', singular: 'AI 操作', icon: '→', titleKey: 'actionType', description: 'AI 实际动作的审计记录。', fields: [] },
+  { entity: 'decisionFrameworks', label: '决策框架', singular: '决策框架', icon: '▦', titleKey: 'name', description: '把分析问题的方式沉淀为可复用的决策框架。', fields: [
+    { key: 'name', label: '框架名称' }, { key: 'slug', label: '唯一标识' }, { key: 'purpose', label: '用于回答什么', multiline: true }, { key: 'components', label: '核心构成', multiline: true }, { key: 'useCases', label: '适用场景', multiline: true }, { key: 'output', label: '输出结果', multiline: true }, { key: 'status', label: '状态', type: 'select', options: [option('active', '启用'), option('archived', '归档')] },
+  ] },
+  { entity: 'ceoPrinciples', label: 'CEO 决策原则', singular: 'CEO 原则', icon: '∴', titleKey: 'name', description: '在冲突中指导 CEO 做取舍的长期原则。', fields: [
+    { key: 'name', label: '原则名称' }, { key: 'slug', label: '唯一标识' }, { key: 'definition', label: '定义', multiline: true }, { key: 'decisionRule', label: '决策规则', multiline: true }, { key: 'useCases', label: '适用场景', multiline: true }, { key: 'antiPatterns', label: '反模式', multiline: true }, { key: 'example', label: '商业案例', multiline: true }, { key: 'status', label: '状态', type: 'select', options: [option('active', '启用'), option('archived', '归档')] },
+  ] },
+  { entity: 'decisionLenses', label: '决策视角', singular: '决策视角', icon: '◎', titleKey: 'name', description: '根据决策类型选择最合适的分析视角。', fields: [
+    { key: 'name', label: '视角名称' }, { key: 'slug', label: '唯一标识' }, { key: 'focus', label: '关注什么', multiline: true }, { key: 'recommendedModelSlugs', label: '推荐模型', multiline: true }, { key: 'recommendedFrameworkSlugs', label: '推荐框架', multiline: true }, { key: 'description', label: '说明', multiline: true }, { key: 'status', label: '状态', type: 'select', options: [option('active', '启用'), option('archived', '归档')] },
+  ] },
 ]
 
 export const configFor = (entity: Entity) => entities.find((item) => item.entity === entity)!

@@ -1,4 +1,5 @@
 mod apify;
+mod decision_intelligence;
 mod external_intelligence;
 mod finance;
 mod mental_models;
@@ -54,6 +55,9 @@ const ENTITIES: &[&str] = &[
     "financialAccounts",
     "financialCategories",
     "financialTransactions",
+    "decisionFrameworks",
+    "ceoPrinciples",
+    "decisionLenses",
 ];
 
 fn now() -> String {
@@ -582,6 +586,7 @@ fn db(app: &AppHandle) -> Result<Connection, String> {
     finance::migrate(&connection, &now())?;
     mental_models::migrate(&connection, &now())?;
     mental_models::migrate_followups(&connection, &now())?;
+    decision_intelligence::migrate(&connection, &now())?;
     Ok(connection)
 }
 

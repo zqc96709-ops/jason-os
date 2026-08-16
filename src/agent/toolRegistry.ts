@@ -14,8 +14,17 @@ const tool = (name: string, description: string, entity: Entity, actionType: Too
   if (actionType === 'START_TIMER' || actionType === 'STOP_TIMER') inputSchema.required = []
   return { name, description, entity, actionType, riskLevel, requiresConfirmation, inputSchema, outputSchema, idempotencyKey: `${name}:normalized-input`, permission: actionType === 'READ' ? 'local_read' : 'local_write' }
 }
+const importWorkspaceDocumentToNotebook: ToolDefinition = {
+  name: 'importWorkspaceDocumentToNotebook',
+  description: '把用户明确指定、且位于 Jason OS docs/ 目录内的本地文档复制到 Notebook Inbox。源文件保持不变，执行前必须确认。',
+  entity: 'notebookFiles', actionType: 'CREATE', riskLevel: 'MEDIUM_WRITE', requiresConfirmation: true,
+  inputSchema: { type: 'object', properties: { name: { type: 'string', description: '保存到 Notebook 后显示的文件名' }, sourcePath: { type: 'string', description: '用户明确提供的 Jason OS docs 文件路径' }, notebookCategoryId: { type: 'string' }, notebookFolderId: { type: 'string' } }, required: ['name', 'sourcePath'], additionalProperties: false },
+  outputSchema, idempotencyKey: 'importWorkspaceDocumentToNotebook:normalized-input', permission: 'local_write',
+}
 
 export const toolRegistry: ToolDefinition[] = [
+  tool('readWorkspaceDocument', '读取用户明确指定、且位于 Jason OS docs/ 目录内的本地 Markdown、TXT、JSON 或 CSV 文档；只读，不修改文件。', 'dataRecords', 'READ', 'READ', false),
+  importWorkspaceDocumentToNotebook,
   tool('createMentalModel', '保存结构化思维模型到思维模型库', 'mentalModels', 'CREATE', 'LOW_WRITE', true),
   tool('getMentalModel', '读取一个思维模型', 'mentalModels', 'READ', 'READ', false),
   tool('searchMentalModels', '搜索可用于当前问题的思维模型', 'mentalModels', 'READ', 'READ', false),

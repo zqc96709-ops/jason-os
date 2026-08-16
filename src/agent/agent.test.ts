@@ -11,6 +11,8 @@ describe('Jason OS Agent registries and context', () => {
     expect(schemaFor('mentalModels')?.requiredFields).toContain('name')
     expect(toolFor('createMentalModel')).toMatchObject({ entity: 'mentalModels', riskLevel: 'LOW_WRITE', requiresConfirmation: true })
     expect(toolRegistry.length).toBeGreaterThanOrEqual(30)
+    expect(toolFor('readWorkspaceDocument')).toMatchObject({ entity: 'dataRecords', actionType: 'READ', riskLevel: 'READ', requiresConfirmation: false })
+    expect(toolFor('importWorkspaceDocumentToNotebook')).toMatchObject({ entity: 'notebookFiles', actionType: 'CREATE', riskLevel: 'MEDIUM_WRITE', requiresConfirmation: true })
   })
 
   it('registers External Intelligence schemas, relations, and guarded write tools', () => {

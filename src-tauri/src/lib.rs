@@ -35,6 +35,7 @@ const NOTEBOOK_MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
 const NOTEBOOK_CHUNK_SIZE: usize = 2 * 1024 * 1024;
 const NOTEBOOK_PREVIEW_LIMIT: u64 = 24 * 1024 * 1024;
 const NOTEBOOK_EXTRACT_LIMIT: usize = 1_500_000;
+const WORKSPACE_DOCUMENT_LIMIT: u64 = 2 * 1024 * 1024;
 
 const ENTITIES: &[&str] = &[
     "goals",
@@ -3306,6 +3307,9 @@ fn agent_tool_metadata(tool: &str) -> Option<(&'static str, &'static str, bool, 
         "createNotebookFolder" => Some(("notebookFolders", "LOW_WRITE", true, "CREATE")),
         "updateNotebookFolder" => Some(("notebookFolders", "MEDIUM_WRITE", true, "UPDATE")),
         "updateNotebookFile" => Some(("notebookFiles", "MEDIUM_WRITE", true, "UPDATE")),
+        "importWorkspaceDocumentToNotebook" => {
+            Some(("notebookFiles", "MEDIUM_WRITE", true, "CREATE"))
+        }
         "createKnowledge" => Some(("knowledge", "LOW_WRITE", true, "CREATE")),
         "updateKnowledge" => Some(("knowledge", "MEDIUM_WRITE", true, "UPDATE")),
         "createGoal" => Some(("goals", "LOW_WRITE", true, "CREATE")),
@@ -3395,6 +3399,22 @@ fn validate_agent_input(entity: &str, action_type: &str, input: &Value) -> Resul
                 return Err(format!("缺少必要字段：{field}"));
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_agent_tool_input(tool: &str, input: &Value) -> Result<(), String> {
+    if tool != "importWorkspaceDocumentToNotebook" {
+        return Ok(());
+    }
+    if input
+        .get("sourcePath")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
+        return Err("导入本地文档缺少 sourcePath".into());
     }
     Ok(())
 }
@@ -3716,6 +3736,7 @@ fn create_agent_action(app: AppHandle, plan: &Value, context: &Value) -> Result<
         context,
     )?;
     validate_agent_input(entity, action_type, &input)?;
+    validate_agent_tool_input(tool, &input)?;
     let idempotency_key = action_idempotency_key(tool, &input);
     if let Some(existing) = find_agent_action_by_key(&connection, &idempotency_key)? {
         return Ok(existing);
@@ -3741,6 +3762,73 @@ fn create_agent_action(app: AppHandle, plan: &Value, context: &Value) -> Result<
     save_record(app, "agentActions".into(), action)
 }
 
+fn import_workspace_document_to_notebook(app: AppHandle, input: Value) -> Result<Value, String> {
+    let source_path = input["sourcePath"]
+        .as_str()
+        .ok_or("导入本地文档缺少 sourcePath")?;
+    let source = resolve_workspace_document_path(&app, source_path)?;
+    let name = input["name"]
+        .as_str()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            source
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_string)
+        })
+        .ok_or("文档没有有效文件名")?;
+    let extension = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let mime_type = match extension.as_str() {
+        "md" => "text/markdown",
+        "txt" => "text/plain",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        _ => "application/octet-stream",
+    };
+    let id = new_id("notebookFiles");
+    let stored_name = if extension.is_empty() {
+        id.clone()
+    } else {
+        format!("{id}.{extension}")
+    };
+    let storage_path = notebook_files_dir(&app)?.join(stored_name);
+    fs::copy(&source, &storage_path).map_err(|error| error.to_string())?;
+    let mut data = notebook_file_data(
+        id,
+        name,
+        mime_type.into(),
+        &storage_path,
+        input["notebookCategoryId"].as_str().map(str::to_string),
+        input["notebookFolderId"].as_str().map(str::to_string),
+        None,
+    )?;
+    let object = data.as_object_mut().ok_or("Notebook 文件数据无效")?;
+    object.insert(
+        "importSource".into(),
+        Value::String("WORKSPACE_DOCUMENT".into()),
+    );
+    object.insert(
+        "sourceDocumentName".into(),
+        Value::String(
+            source
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("本地文档")
+                .into(),
+        ),
+    );
+    if let Some(action_id) = input["agentActionId"].as_str() {
+        object.insert("agentActionId".into(), Value::String(action_id.into()));
+        object.insert("evidenceLevel".into(), Value::String("AI_CONFIRMED".into()));
+    }
+    save_record(app, "notebookFiles".into(), data)
+}
+
 fn execute_registered_tool(app: AppHandle, action: &Value) -> Result<Value, String> {
     let tool = action
         .get("toolName")
@@ -3761,6 +3849,10 @@ fn execute_registered_tool(app: AppHandle, action: &Value) -> Result<Value, Stri
         }
     }
     validate_agent_input(entity, action_type, &input)?;
+    validate_agent_tool_input(tool, &input)?;
+    if tool == "importWorkspaceDocumentToNotebook" {
+        return import_workspace_document_to_notebook(app, input);
+    }
     match action_type {
         "CREATE" => save_record(app, entity.into(), input),
         "UPDATE" => {
@@ -3963,6 +4055,94 @@ fn compact_for_ai(value: &Value, depth: usize) -> Value {
     }
 }
 
+fn workspace_document_roots(app: &AppHandle) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+        .join("docs");
+    roots.push(source_root);
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        roots.push(resource_dir.join("docs"));
+    }
+    roots
+}
+
+fn is_workspace_document(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|extension| extension.to_str()),
+        Some("md" | "txt" | "json" | "csv")
+    )
+}
+
+fn resolve_workspace_document_path(
+    app: &AppHandle,
+    requested_path: &str,
+) -> Result<PathBuf, String> {
+    let requested = PathBuf::from(requested_path);
+    let candidates = if requested.is_absolute() {
+        vec![requested]
+    } else {
+        workspace_document_roots(app)
+            .into_iter()
+            .map(|root| root.join(&requested))
+            .collect()
+    };
+    for candidate in candidates {
+        let Ok(canonical) = candidate.canonicalize() else {
+            continue;
+        };
+        let allowed = workspace_document_roots(app).into_iter().any(|root| {
+            root.canonicalize()
+                .map(|canonical_root| canonical.starts_with(canonical_root))
+                .unwrap_or(false)
+        });
+        if !allowed {
+            return Err("只允许读取 Jason OS docs/ 目录内的文档".into());
+        }
+        if !is_workspace_document(&canonical) {
+            return Err("仅支持读取 Markdown、TXT、JSON 或 CSV 文档".into());
+        }
+        let metadata = fs::metadata(&canonical).map_err(|error| error.to_string())?;
+        if metadata.len() > WORKSPACE_DOCUMENT_LIMIT {
+            return Err("文档超过 2 MB，不能直接注入 AI 上下文".into());
+        }
+        return Ok(canonical);
+    }
+    Err("未找到指定的 Jason OS docs 文档".into())
+}
+
+fn read_workspace_document_file(app: &AppHandle, requested_path: &str) -> Result<Value, String> {
+    let canonical = resolve_workspace_document_path(app, requested_path)?;
+    let content = fs::read_to_string(&canonical).map_err(|error| error.to_string())?;
+    let (content, truncated) = truncate_notebook_text(content, 60_000);
+    Ok(json!({
+            "id": format!("workspace-document:{}", canonical.to_string_lossy()),
+            "entity": "dataRecords",
+            "type": "WORKSPACE_DOCUMENT",
+            "title": canonical.file_name().and_then(|name| name.to_str()).unwrap_or("本地文档"),
+            "path": canonical.to_string_lossy(),
+            "content": content,
+            "truncated": truncated,
+            "evidenceLevel": "USER_AUTHORIZED_LOCAL_DOCUMENT"
+    }))
+}
+
+fn workspace_document_path_in_question(question: &str) -> Option<String> {
+    let expression =
+        Regex::new(r#"(?P<path>(?:/|\.?/)[^\n\r\"'`，。！？；]+?\.(?:md|txt|json|csv))"#).ok()?;
+    expression
+        .captures(question)
+        .and_then(|captures| captures.name("path"))
+        .map(|value| value.as_str().to_string())
+}
+
+#[tauri::command]
+fn read_workspace_document(app: AppHandle, path: String) -> Result<Value, String> {
+    read_workspace_document_file(&app, &path)
+}
+
 fn ask_chief_blocking(
     app: AppHandle,
     question: String,
@@ -4065,6 +4245,22 @@ fn ask_chief_blocking(
             "title":"外部情报已验证内容样本", "items":external_intelligence::list_items(&connection, 30)?, "evidenceLevel":"REALITY"
         }));
     }
+    if let Some(path) = workspace_document_path_in_question(&question) {
+        match read_workspace_document_file(&app, &path) {
+            Ok(document) => local_context.insert(0, document),
+            Err(error) => local_context.insert(
+                0,
+                json!({
+                    "id": format!("workspace-document-error:{path}"),
+                    "entity": "dataRecords",
+                    "type": "WORKSPACE_DOCUMENT_ERROR",
+                    "path": path,
+                    "error": error,
+                    "evidenceLevel": "USER_AUTHORIZED_LOCAL_DOCUMENT"
+                }),
+            ),
+        }
+    }
     local_context.truncate(48);
     let local_context = local_context
         .iter()
@@ -4100,7 +4296,9 @@ fn ask_chief_blocking(
 16. 现金净流动、项目经营贡献不等于会计利润；不得把库存采购直接判断为项目亏损。
 17. AI 创建 Outcome、账户、分类或财务流水只能生成 Action 预览。财务流水默认 DRAFT，禁止直接创建 POSTED 流水、自动付款、增加预算或修改账户余额。
 18. 用户说“保存到 Notebook”“记一条想法”“随手记下来”时使用 createNote 生成 Action 预览，intent=SAVE_NOTE 或 CREATE_NOTE；Note 不要求分类或关联，title 必填，content 可选。
-19. 当用户要求理解、总结或查找 Notebook 文件时，只能使用文件已提取文本和 Metadata；若 extractStatus 不是 READY，必须说明文件仍可保存但尚无可用正文。AI 可以提出潜在关联候选和理由，但绝不能创建、删除或移动 Relation。"#;
+19. 当用户要求理解、总结或查找 Notebook 文件时，只能使用文件已提取文本和 Metadata；若 extractStatus 不是 READY，必须说明文件仍可保存但尚无可用正文。AI 可以提出潜在关联候选和理由，但绝不能创建、删除或移动 Relation。
+20. 当相关本地记录中存在 type=WORKSPACE_DOCUMENT 时，其 content 是用户明确授权读取的 Jason OS docs 文档。必须直接基于该内容回答，不得声称“没有直接读取本地文件的工具”。如果存在 WORKSPACE_DOCUMENT_ERROR，则说明错误原因和允许的 docs/ 路径范围。
+21. 用户明确要求把 WORKSPACE_DOCUMENT 保存、导入或复制到 Notebook 时，使用 importWorkspaceDocumentToNotebook 生成 Action 预览，input 必须包含 name 和 sourcePath。该操作只复制 docs 文件到 Notebook Inbox，不修改源文件；必须等待用户确认后执行。"#;
     let mut messages = Vec::new();
     let recent_history = history.unwrap_or_default();
     let skip = recent_history.len().saturating_sub(10);
@@ -4223,6 +4421,7 @@ pub fn run() {
             test_ai_provider,
             get_hackstart_config,
             configure_hackstart,
+            read_workspace_document,
             ask_chief,
             execute_ai_action,
             cancel_ai_action
@@ -4246,6 +4445,37 @@ mod tests {
         let (text, truncated) = truncate_notebook_text("abcdef".into(), 3);
         assert!(truncated);
         assert!(text.starts_with("abc"));
+    }
+
+    #[test]
+    fn workspace_document_paths_are_explicit_and_limited_to_text_formats() {
+        assert_eq!(
+            workspace_document_path_in_question(
+                "请读取 /Users/mac/Desktop/JASON OS/docs/JASON_OS_创作SOP.md"
+            ),
+            Some("/Users/mac/Desktop/JASON OS/docs/JASON_OS_创作SOP.md".into())
+        );
+        assert!(is_workspace_document(Path::new("guide.md")));
+        assert!(is_workspace_document(Path::new("guide.txt")));
+        assert!(!is_workspace_document(Path::new("secret.pdf")));
+    }
+
+    #[test]
+    fn workspace_document_import_is_a_confirmed_notebook_write() {
+        assert_eq!(
+            agent_tool_metadata("importWorkspaceDocumentToNotebook"),
+            Some(("notebookFiles", "MEDIUM_WRITE", true, "CREATE"))
+        );
+        assert!(validate_agent_tool_input(
+            "importWorkspaceDocumentToNotebook",
+            &json!({"name":"SOP.md","sourcePath":"/docs/SOP.md"})
+        )
+        .is_ok());
+        assert!(validate_agent_tool_input(
+            "importWorkspaceDocumentToNotebook",
+            &json!({"name":"SOP.md"})
+        )
+        .is_err());
     }
 
     #[test]

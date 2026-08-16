@@ -56,3 +56,9 @@ AI 首席助理支持独立选择服务商和模型：
 
 每个服务商的 API Key 分别保存到 应用私有凭据文件（权限 0600）。切换服务商时不会覆盖其他服务商的 Key。
 - 火山引擎 Agent Plan：`kimi-k3`（Responses API，`/api/plan/v3/responses`）
+
+## 创作与交付 SOP
+
+完整的产品创作、模块开发、AI 安全、UI 验证、桌面打包与 GitHub 交付流程见：
+
+[`docs/JASON_OS_创作SOP.md`](docs/JASON_OS_创作SOP.md)

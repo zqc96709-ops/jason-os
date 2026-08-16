@@ -13,8 +13,9 @@ use serde_json::{json, Map, Value};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
-    fs,
+    fs::{self, OpenOptions},
     hash::{Hash, Hasher},
+    io::Write,
     path::{Path, PathBuf},
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
@@ -23,6 +24,17 @@ use std::{
 use tauri::{AppHandle, Manager};
 
 static ID_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const LOCAL_NOTEBOOK_OWNER: &str = "local-user";
+const NOTEBOOK_ENTITIES: &[&str] = &[
+    "notes",
+    "notebookCategories",
+    "notebookFolders",
+    "notebookFiles",
+];
+const NOTEBOOK_MAX_FILE_SIZE: u64 = 1024 * 1024 * 1024;
+const NOTEBOOK_CHUNK_SIZE: usize = 2 * 1024 * 1024;
+const NOTEBOOK_PREVIEW_LIMIT: u64 = 24 * 1024 * 1024;
+const NOTEBOOK_EXTRACT_LIMIT: usize = 1_500_000;
 
 const ENTITIES: &[&str] = &[
     "goals",
@@ -40,6 +52,10 @@ const ENTITIES: &[&str] = &[
     "mentalModels",
     "mentalModelUsages",
     "decisions",
+    "notes",
+    "notebookCategories",
+    "notebookFolders",
+    "notebookFiles",
     "inbox",
     "events",
     "people",
@@ -84,6 +100,7 @@ fn is_entity(entity: &str) -> bool {
 fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     fs::create_dir_all(dir.join("attachments")).map_err(|e| e.to_string())?;
+    fs::create_dir_all(dir.join("notebook-files")).map_err(|e| e.to_string())?;
     fs::create_dir_all(dir.join("exports")).map_err(|e| e.to_string())?;
     fs::create_dir_all(dir.join("backups")).map_err(|e| e.to_string())?;
     fs::create_dir_all(dir.join("external-intelligence/raw")).map_err(|e| e.to_string())?;
@@ -743,6 +760,8 @@ fn expected_entity(key: &str) -> Option<&'static str> {
         "accountId" | "destinationAccountId" => Some("financialAccounts"),
         "categoryId" | "parentCategoryId" => Some("financialCategories"),
         "transactionId" | "refundOfTransactionId" => Some("financialTransactions"),
+        "notebookCategoryId" | "parentNotebookCategoryId" => Some("notebookCategories"),
+        "notebookFolderId" | "parentNotebookFolderId" => Some("notebookFolders"),
         _ => None,
     }
 }
@@ -1145,6 +1164,23 @@ fn save_record(app: AppHandle, entity: String, mut data: Value) -> Result<Value,
         .unwrap_or_else(|| new_id(&entity));
     let connection = db(&app)?;
     let existing = record_by_id(&connection, &id)?;
+    if NOTEBOOK_ENTITIES.contains(&entity.as_str()) {
+        let existing_owner = existing
+            .as_ref()
+            .and_then(|record| record.get("ownerId"))
+            .and_then(Value::as_str)
+            .unwrap_or(LOCAL_NOTEBOOK_OWNER);
+        if existing_owner != LOCAL_NOTEBOOK_OWNER {
+            return Err("无权访问其他用户的 Notebook 内容".into());
+        }
+        let object = data.as_object_mut().ok_or("Notebook 数据必须是对象")?;
+        if let Some(owner) = object.get("ownerId").and_then(Value::as_str) {
+            if !owner.is_empty() && owner != LOCAL_NOTEBOOK_OWNER {
+                return Err("不能写入其他用户的 Notebook 内容".into());
+            }
+        }
+        object.insert("ownerId".into(), Value::String(LOCAL_NOTEBOOK_OWNER.into()));
+    }
     if entity == "decisions" && existing.is_none() {
         finance::freeze_decision_snapshot(&connection, &mut data, &now())?;
     }
@@ -1199,6 +1235,11 @@ fn archive_record(app: AppHandle, id: String) -> Result<(), String> {
         object.insert("archivedAt".into(), Value::String(archived_at.clone()));
     }
     let entity = data["entity"].as_str().unwrap_or("").to_string();
+    if NOTEBOOK_ENTITIES.contains(&entity.as_str())
+        && data["ownerId"].as_str().unwrap_or(LOCAL_NOTEBOOK_OWNER) != LOCAL_NOTEBOOK_OWNER
+    {
+        return Err("无权归档其他用户的 Notebook 内容".into());
+    }
     let created = data["createdAt"].as_str().map(str::to_string);
     write_record(&connection, &entity, &id, &data, created.as_deref())?;
     connection
@@ -1412,15 +1453,598 @@ fn add_relation(
         return Err("不能关联记录自身".into());
     }
     let connection = db(&app)?;
-    if record_by_id(&connection, &from_id)?.is_none()
-        || record_by_id(&connection, &to_id)?.is_none()
-    {
-        return Err("关联记录不存在".into());
+    let from = record_by_id(&connection, &from_id)?.ok_or("关联记录不存在")?;
+    let to = record_by_id(&connection, &to_id)?.ok_or("关联记录不存在")?;
+    for record in [&from, &to] {
+        if NOTEBOOK_ENTITIES.contains(&record["entity"].as_str().unwrap_or(""))
+            && record["ownerId"].as_str().unwrap_or(LOCAL_NOTEBOOK_OWNER) != LOCAL_NOTEBOOK_OWNER
+        {
+            return Err("无权关联其他用户的 Notebook 内容".into());
+        }
     }
     connection.execute(
         "INSERT OR IGNORE INTO relations(id, from_id, to_id, relation_type, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![new_id("relation"), from_id, to_id, relation_type, now()],
     ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_relation(
+    app: AppHandle,
+    from_id: String,
+    to_id: String,
+    relation_type: String,
+) -> Result<(), String> {
+    if relation_type.starts_with("field:") {
+        return Err("字段派生关系不能直接删除，请编辑来源记录字段".into());
+    }
+    db(&app)?
+        .execute(
+            "DELETE FROM relations WHERE from_id=?1 AND to_id=?2 AND relation_type=?3",
+            params![from_id, to_id, relation_type],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn safe_file_name(name: &str) -> String {
+    let cleaned = name
+        .chars()
+        .map(|character| match character {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            _ if character.is_control() => '_',
+            _ => character,
+        })
+        .collect::<String>();
+    let trimmed = cleaned.trim().trim_matches('.');
+    if trimmed.is_empty() {
+        "untitled".into()
+    } else {
+        trimmed.into()
+    }
+}
+
+fn truncate_notebook_text(value: String, limit: usize) -> (String, bool) {
+    if value.chars().count() <= limit {
+        return (value, false);
+    }
+    (
+        format!(
+            "{}\n[内容已截断]",
+            value.chars().take(limit).collect::<String>()
+        ),
+        true,
+    )
+}
+
+fn strip_xml(value: &str) -> String {
+    let without_tags = Regex::new(r"<[^>]+>").unwrap().replace_all(value, " ");
+    without_tags
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn extract_with_textutil(path: &Path) -> Result<String, String> {
+    let output = Command::new("/usr/bin/textutil")
+        .args(["-convert", "txt", "-stdout"])
+        .arg(path)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn extract_pdf_with_pdfkit(path: &Path) -> Result<String, String> {
+    let script = r#"import Foundation
+import PDFKit
+let url = URL(fileURLWithPath: CommandLine.arguments[1])
+guard let document = PDFDocument(url: url) else { exit(1) }
+for index in 0..<document.pageCount {
+  if let text = document.page(at: index)?.string { print(text) }
+}"#;
+    let output = Command::new("/usr/bin/swift")
+        .arg("-e")
+        .arg(script)
+        .arg(path)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn extract_office_xml(path: &Path, extension: &str) -> Result<String, String> {
+    let listing = Command::new("/usr/bin/unzip")
+        .args(["-Z1"])
+        .arg(path)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !listing.status.success() {
+        return Err(String::from_utf8_lossy(&listing.stderr).trim().to_string());
+    }
+    let listing_text = String::from_utf8_lossy(&listing.stdout);
+    let names = listing_text
+        .lines()
+        .filter(|name| match extension {
+            "docx" => name.starts_with("word/") && name.ends_with(".xml"),
+            "pptx" => name.starts_with("ppt/slides/") && name.ends_with(".xml"),
+            "xlsx" => {
+                (name.starts_with("xl/worksheets/") || *name == "xl/sharedStrings.xml")
+                    && name.ends_with(".xml")
+            }
+            _ => false,
+        })
+        .take(80)
+        .collect::<Vec<_>>();
+    if names.is_empty() {
+        return Err("没有可提取的 Office XML 内容".into());
+    }
+    let output = Command::new("/usr/bin/unzip")
+        .arg("-p")
+        .arg(path)
+        .args(names)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(strip_xml(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn extract_notebook_content(path: &Path, extension: &str) -> Result<String, String> {
+    let metadata = fs::metadata(path).map_err(|error| error.to_string())?;
+    if metadata.len() > 200 * 1024 * 1024 {
+        return Err("文件超过 200 MB，跳过内容提取；原文件已安全保存".into());
+    }
+    let raw_text_extensions = [
+        "txt", "md", "markdown", "csv", "json", "yaml", "yml", "xml", "html", "htm", "css", "js",
+        "ts", "jsx", "tsx", "py", "sql", "rtf",
+    ];
+    let content = if raw_text_extensions.contains(&extension) {
+        String::from_utf8_lossy(&fs::read(path).map_err(|error| error.to_string())?).to_string()
+    } else if extension == "pdf" {
+        extract_pdf_with_pdfkit(path)?
+    } else if ["doc", "docx", "odt", "pages"].contains(&extension) {
+        extract_with_textutil(path).or_else(|_| extract_office_xml(path, "docx"))?
+    } else if ["pptx", "xlsx"].contains(&extension) {
+        extract_office_xml(path, extension)?
+    } else if ["ppt", "xls", "numbers", "key"].contains(&extension) {
+        extract_with_textutil(path)?
+    } else {
+        return Err("该文件类型当前只保存原始文件和 Metadata".into());
+    };
+    Ok(truncate_notebook_text(content, NOTEBOOK_EXTRACT_LIMIT).0)
+}
+
+fn apply_notebook_extraction(data: &mut Value, path: &Path) {
+    let extension = data["extension"].as_str().unwrap_or("").to_string();
+    let object = data.as_object_mut().unwrap();
+    match extract_notebook_content(path, &extension) {
+        Ok(content) if !content.trim().is_empty() => {
+            object.insert("extractedContent".into(), Value::String(content));
+            object.insert("extractStatus".into(), Value::String("READY".into()));
+            object.insert("extractedAt".into(), Value::String(now()));
+            object.remove("extractionError");
+        }
+        Ok(_) => {
+            object.insert("extractStatus".into(), Value::String("UNAVAILABLE".into()));
+            object.insert(
+                "extractionError".into(),
+                Value::String("未提取到可搜索文本".into()),
+            );
+        }
+        Err(error) => {
+            object.insert("extractStatus".into(), Value::String("UNAVAILABLE".into()));
+            object.insert("extractionError".into(), Value::String(error));
+        }
+    }
+}
+
+fn notebook_files_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(data_dir(app)?.join("notebook-files"))
+}
+
+fn notebook_uploads_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let directory = notebook_files_dir(app)?.join(".uploads");
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    Ok(directory)
+}
+
+fn notebook_file_path(app: &AppHandle, record: &Value) -> Result<PathBuf, String> {
+    if record["entity"].as_str() != Some("notebookFiles") {
+        return Err("不是 Notebook 文件".into());
+    }
+    if record["ownerId"].as_str().unwrap_or(LOCAL_NOTEBOOK_OWNER) != LOCAL_NOTEBOOK_OWNER {
+        return Err("无权访问其他用户的 Notebook 文件".into());
+    }
+    let path = PathBuf::from(
+        record["storagePath"]
+            .as_str()
+            .ok_or("文件缺少 storagePath")?,
+    );
+    if !path.starts_with(notebook_files_dir(app)?) || !path.exists() {
+        return Err("文件路径无效或文件不存在".into());
+    }
+    Ok(path)
+}
+
+fn notebook_file_data(
+    id: String,
+    name: String,
+    mime_type: String,
+    path: &Path,
+    notebook_category_id: Option<String>,
+    notebook_folder_id: Option<String>,
+    relative_path: Option<String>,
+) -> Result<Value, String> {
+    let safe_name = safe_file_name(&name);
+    let extension = Path::new(&safe_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let mut data = json!({
+        "id": id,
+        "name": safe_name,
+        "originalName": name,
+        "extension": extension,
+        "mimeType": mime_type,
+        "size": fs::metadata(path).map_err(|error| error.to_string())?.len(),
+        "storagePath": path.to_string_lossy(),
+        "relativePath": relative_path.unwrap_or_default(),
+        "status": "ACTIVE",
+        "ownerId": LOCAL_NOTEBOOK_OWNER
+    });
+    if let Some(object) = data.as_object_mut() {
+        if let Some(value) = notebook_category_id.filter(|value| !value.trim().is_empty()) {
+            object.insert("notebookCategoryId".into(), Value::String(value));
+        }
+        if let Some(value) = notebook_folder_id.filter(|value| !value.trim().is_empty()) {
+            object.insert("notebookFolderId".into(), Value::String(value));
+        }
+    }
+    apply_notebook_extraction(&mut data, path);
+    Ok(data)
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let a = chunk[0];
+        let b = *chunk.get(1).unwrap_or(&0);
+        let c = *chunk.get(2).unwrap_or(&0);
+        output.push(TABLE[(a >> 2) as usize] as char);
+        output.push(TABLE[((a & 0b0000_0011) << 4 | b >> 4) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            TABLE[((b & 0b0000_1111) << 2 | c >> 6) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            TABLE[(c & 0b0011_1111) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
+}
+
+fn notebook_max_file_size(app: &AppHandle) -> Result<u64, String> {
+    let value = db(app)?
+        .query_row(
+            "SELECT value FROM settings WHERE key='notebook_max_file_size'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    Ok(value
+        .and_then(|item| item.parse::<u64>().ok())
+        .unwrap_or(NOTEBOOK_MAX_FILE_SIZE))
+}
+
+#[tauri::command]
+fn get_notebook_storage_config(app: AppHandle) -> Result<Value, String> {
+    Ok(json!({"maxFileSize": notebook_max_file_size(&app)?, "chunkSize": NOTEBOOK_CHUNK_SIZE}))
+}
+
+#[tauri::command]
+fn set_notebook_storage_config(app: AppHandle, max_file_size: u64) -> Result<Value, String> {
+    if !(1024 * 1024..=10 * 1024 * 1024 * 1024).contains(&max_file_size) {
+        return Err("文件大小上限必须在 1 MB 到 10 GB 之间".into());
+    }
+    db(&app)?.execute(
+        "INSERT INTO settings(key,value,updated_at) VALUES ('notebook_max_file_size',?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",
+        params![max_file_size.to_string(), now()],
+    ).map_err(|error| error.to_string())?;
+    get_notebook_storage_config(app)
+}
+
+#[tauri::command]
+fn begin_notebook_file_upload(app: AppHandle, _name: String, size: u64) -> Result<Value, String> {
+    let max_file_size = notebook_max_file_size(&app)?;
+    if size > max_file_size {
+        return Err(format!(
+            "文件超过当前允许上限（{} MB）",
+            max_file_size / 1024 / 1024
+        ));
+    }
+    let upload_id = new_id("notebook-upload");
+    let path = notebook_uploads_dir(&app)?.join(format!("{upload_id}.part"));
+    fs::File::create(path).map_err(|error| error.to_string())?;
+    Ok(json!({"uploadId": upload_id, "chunkSize": NOTEBOOK_CHUNK_SIZE}))
+}
+
+#[tauri::command]
+fn append_notebook_file_upload(
+    app: AppHandle,
+    upload_id: String,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    if bytes.len() > NOTEBOOK_CHUNK_SIZE {
+        return Err("上传分块超过允许大小".into());
+    }
+    let path = notebook_uploads_dir(&app)?.join(format!("{}.part", safe_file_name(&upload_id)));
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(|error| error.to_string())?;
+    file.write_all(&bytes).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn finish_notebook_file_upload(
+    app: AppHandle,
+    upload_id: String,
+    name: String,
+    mime_type: String,
+    notebook_category_id: Option<String>,
+    notebook_folder_id: Option<String>,
+    relative_path: Option<String>,
+) -> Result<Value, String> {
+    let temporary_path =
+        notebook_uploads_dir(&app)?.join(format!("{}.part", safe_file_name(&upload_id)));
+    let size = fs::metadata(&temporary_path)
+        .map_err(|_| "上传临时文件不存在".to_string())?
+        .len();
+    if size > notebook_max_file_size(&app)? {
+        let _ = fs::remove_file(&temporary_path);
+        return Err("文件超过当前允许上限".into());
+    }
+    let id = new_id("notebookFiles");
+    let safe_name = safe_file_name(&name);
+    let extension = Path::new(&safe_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let stored_name = if extension.is_empty() {
+        id.clone()
+    } else {
+        format!("{id}.{}", extension.to_lowercase())
+    };
+    let storage_path = notebook_files_dir(&app)?.join(stored_name);
+    fs::rename(&temporary_path, &storage_path).map_err(|error| error.to_string())?;
+    let data = notebook_file_data(
+        id,
+        name,
+        mime_type,
+        &storage_path,
+        notebook_category_id,
+        notebook_folder_id,
+        relative_path,
+    )?;
+    save_record(app, "notebookFiles".into(), data)
+}
+
+#[tauri::command]
+fn upload_notebook_file(
+    app: AppHandle,
+    name: String,
+    mime_type: String,
+    bytes: Vec<u8>,
+    notebook_category_id: Option<String>,
+    notebook_folder_id: Option<String>,
+    relative_path: Option<String>,
+) -> Result<Value, String> {
+    if bytes.len() as u64 > notebook_max_file_size(&app)? {
+        return Err("文件超过当前允许上限".into());
+    }
+    let id = new_id("notebookFiles");
+    let safe_name = safe_file_name(&name);
+    let extension = Path::new(&safe_name)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    let stored_name = if extension.is_empty() {
+        id.clone()
+    } else {
+        format!("{id}.{}", extension.to_lowercase())
+    };
+    let storage_path = notebook_files_dir(&app)?.join(stored_name);
+    fs::write(&storage_path, bytes).map_err(|error| error.to_string())?;
+    let data = notebook_file_data(
+        id,
+        name,
+        mime_type,
+        &storage_path,
+        notebook_category_id,
+        notebook_folder_id,
+        relative_path,
+    )?;
+    save_record(app, "notebookFiles".into(), data)
+}
+
+#[tauri::command]
+fn open_notebook_file(app: AppHandle, id: String) -> Result<(), String> {
+    let record = record_by_id(&db(&app)?, &id)?.ok_or("文件不存在")?;
+    let path = notebook_file_path(&app, &record)?;
+    Command::new("open")
+        .arg(path)
+        .status()
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn reveal_notebook_file(app: AppHandle, id: String) -> Result<(), String> {
+    let record = record_by_id(&db(&app)?, &id)?.ok_or("文件不存在")?;
+    let path = notebook_file_path(&app, &record)?;
+    Command::new("open")
+        .args(["-R"])
+        .arg(path)
+        .status()
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn get_notebook_file_preview(app: AppHandle, id: String) -> Result<Value, String> {
+    let record = record_by_id(&db(&app)?, &id)?.ok_or("文件不存在")?;
+    let path = notebook_file_path(&app, &record)?;
+    let extension = record["extension"].as_str().unwrap_or("").to_lowercase();
+    let mime_type = record["mimeType"]
+        .as_str()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("application/octet-stream");
+    if [
+        "txt", "md", "markdown", "csv", "json", "yaml", "yml", "xml", "html", "htm", "css", "js",
+        "ts", "jsx", "tsx", "py", "sql", "doc", "docx", "odt", "pages", "ppt", "pptx", "xls",
+        "xlsx", "numbers", "key", "pdf",
+    ]
+    .contains(&extension.as_str())
+    {
+        let content = record["extractedContent"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        if extension == "pdf"
+            && fs::metadata(&path)
+                .map_err(|error| error.to_string())?
+                .len()
+                <= NOTEBOOK_PREVIEW_LIMIT
+        {
+            let bytes = fs::read(path).map_err(|error| error.to_string())?;
+            return Ok(
+                json!({"kind":"pdf", "dataUrl": format!("data:application/pdf;base64,{}", base64_encode(&bytes)), "text": truncate_notebook_text(content, 24_000).0}),
+            );
+        }
+        return Ok(
+            json!({"kind":"text", "text": truncate_notebook_text(content, 24_000).0, "extractStatus": record["extractStatus"]}),
+        );
+    }
+    let size = fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len();
+    if size > NOTEBOOK_PREVIEW_LIMIT {
+        return Ok(json!({"kind":"unsupported", "reason":"文件过大，请在本机打开预览"}));
+    }
+    let bytes = fs::read(path).map_err(|error| error.to_string())?;
+    if mime_type.starts_with("image/") {
+        return Ok(
+            json!({"kind":"image", "dataUrl": format!("data:{mime_type};base64,{}", base64_encode(&bytes))}),
+        );
+    }
+    if mime_type.starts_with("audio/") {
+        return Ok(
+            json!({"kind":"audio", "dataUrl": format!("data:{mime_type};base64,{}", base64_encode(&bytes))}),
+        );
+    }
+    if mime_type.starts_with("video/") {
+        return Ok(
+            json!({"kind":"video", "dataUrl": format!("data:{mime_type};base64,{}", base64_encode(&bytes))}),
+        );
+    }
+    Ok(json!({"kind":"unsupported", "reason":"该类型暂不支持内嵌预览，可在本机打开"}))
+}
+
+#[tauri::command]
+fn extract_notebook_file_content(app: AppHandle, id: String) -> Result<Value, String> {
+    let connection = db(&app)?;
+    let mut record = record_by_id(&connection, &id)?.ok_or("文件不存在")?;
+    let path = notebook_file_path(&app, &record)?;
+    apply_notebook_extraction(&mut record, &path);
+    save_record(app, "notebookFiles".into(), record)
+}
+
+#[tauri::command]
+fn copy_notebook_file(
+    app: AppHandle,
+    id: String,
+    notebook_category_id: Option<String>,
+    notebook_folder_id: Option<String>,
+) -> Result<Value, String> {
+    let source = record_by_id(&db(&app)?, &id)?.ok_or("文件不存在")?;
+    let source_path = notebook_file_path(&app, &source)?;
+    let copy_id = new_id("notebookFiles");
+    let extension = source["extension"].as_str().unwrap_or("");
+    let destination = notebook_files_dir(&app)?.join(if extension.is_empty() {
+        copy_id.clone()
+    } else {
+        format!("{copy_id}.{extension}")
+    });
+    fs::copy(source_path, &destination).map_err(|error| error.to_string())?;
+    let source_name = source["name"].as_str().unwrap_or("未命名文件");
+    let name = match Path::new(source_name)
+        .extension()
+        .and_then(|value| value.to_str())
+    {
+        Some(extension) if !extension.is_empty() => format!(
+            "{} 副本.{extension}",
+            Path::new(source_name)
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or(source_name)
+        ),
+        _ => format!("{source_name} 副本"),
+    };
+    let data = notebook_file_data(
+        copy_id,
+        name,
+        source["mimeType"]
+            .as_str()
+            .unwrap_or("application/octet-stream")
+            .into(),
+        &destination,
+        notebook_category_id.or_else(|| source["notebookCategoryId"].as_str().map(str::to_string)),
+        notebook_folder_id.or_else(|| source["notebookFolderId"].as_str().map(str::to_string)),
+        source["relativePath"].as_str().map(str::to_string),
+    )?;
+    save_record(app, "notebookFiles".into(), data)
+}
+
+#[tauri::command]
+fn destroy_notebook_file(app: AppHandle, id: String) -> Result<(), String> {
+    let connection = db(&app)?;
+    let record = record_by_id(&connection, &id)?.ok_or("文件不存在")?;
+    if record["archivedAt"].as_str().is_none() {
+        return Err("请先 Archive 文件，再执行永久删除".into());
+    }
+    let path = notebook_file_path(&app, &record)?;
+    fs::remove_file(path).map_err(|error| error.to_string())?;
+    connection
+        .execute(
+            "DELETE FROM relations WHERE from_id=?1 OR to_id=?1",
+            params![id],
+        )
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute("DELETE FROM records_fts WHERE id=?1", params![id])
+        .map_err(|error| error.to_string())?;
+    connection
+        .execute("DELETE FROM records WHERE id=?1", params![id])
+        .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -2675,6 +3299,13 @@ fn agent_tool_metadata(tool: &str) -> Option<(&'static str, &'static str, bool, 
     match tool {
         "createMentalModel" => Some(("mentalModels", "LOW_WRITE", true, "CREATE")),
         "updateMentalModel" => Some(("mentalModels", "MEDIUM_WRITE", true, "UPDATE")),
+        "createNote" => Some(("notes", "LOW_WRITE", true, "CREATE")),
+        "updateNote" => Some(("notes", "MEDIUM_WRITE", true, "UPDATE")),
+        "createNotebookCategory" => Some(("notebookCategories", "LOW_WRITE", true, "CREATE")),
+        "updateNotebookCategory" => Some(("notebookCategories", "MEDIUM_WRITE", true, "UPDATE")),
+        "createNotebookFolder" => Some(("notebookFolders", "LOW_WRITE", true, "CREATE")),
+        "updateNotebookFolder" => Some(("notebookFolders", "MEDIUM_WRITE", true, "UPDATE")),
+        "updateNotebookFile" => Some(("notebookFiles", "MEDIUM_WRITE", true, "UPDATE")),
         "createKnowledge" => Some(("knowledge", "LOW_WRITE", true, "CREATE")),
         "updateKnowledge" => Some(("knowledge", "MEDIUM_WRITE", true, "UPDATE")),
         "createGoal" => Some(("goals", "LOW_WRITE", true, "CREATE")),
@@ -2727,6 +3358,8 @@ fn action_idempotency_key(tool: &str, input: &Value) -> String {
 fn required_agent_fields(entity: &str) -> &'static [&'static str] {
     match entity {
         "mentalModels" => &["name"],
+        "notes" => &["title"],
+        "notebookCategories" | "notebookFolders" | "notebookFiles" => &["name"],
         "knowledge" => &["title", "content"],
         "goals" | "projects" | "tasks" | "decisions" | "reviews" => &["title"],
         "insights" | "principles" => &["statement"],
@@ -2791,6 +3424,34 @@ fn apply_agent_context(
         resolved = json!({});
     }
     let object = resolved.as_object_mut().unwrap();
+    if entity == "notes" {
+        for key in [
+            "goalId",
+            "goalIds",
+            "projectId",
+            "projectIds",
+            "taskId",
+            "taskIds",
+            "resultId",
+            "resultIds",
+            "timeLogId",
+            "timeLogIds",
+            "reviewId",
+            "reviewIds",
+            "insightId",
+            "insightIds",
+            "knowledgeId",
+            "knowledgeIds",
+            "mentalModelId",
+            "mentalModelIds",
+            "decisionId",
+            "decisionIds",
+            "financialTransactionId",
+            "financialTransactionIds",
+        ] {
+            object.remove(key);
+        }
+    }
     if entity == "projects"
         && object
             .get("goalId")
@@ -3437,7 +4098,9 @@ fn ask_chief_blocking(
 14. 外部指标只能引用 VERIFIED_EXTERNAL_TOOL_RESULT、Signal 或真实本地记录；缺失时必须说明数据不足。
 15. Finance、Outcome 与 Project Economics 必须区分事实、确定性计算、推断和数据缺口；MISSING 不能解释为 0。
 16. 现金净流动、项目经营贡献不等于会计利润；不得把库存采购直接判断为项目亏损。
-17. AI 创建 Outcome、账户、分类或财务流水只能生成 Action 预览。财务流水默认 DRAFT，禁止直接创建 POSTED 流水、自动付款、增加预算或修改账户余额。"#;
+17. AI 创建 Outcome、账户、分类或财务流水只能生成 Action 预览。财务流水默认 DRAFT，禁止直接创建 POSTED 流水、自动付款、增加预算或修改账户余额。
+18. 用户说“保存到 Notebook”“记一条想法”“随手记下来”时使用 createNote 生成 Action 预览，intent=SAVE_NOTE 或 CREATE_NOTE；Note 不要求分类或关联，title 必填，content 可选。
+19. 当用户要求理解、总结或查找 Notebook 文件时，只能使用文件已提取文本和 Metadata；若 extractStatus 不是 READY，必须说明文件仍可保存但尚无可用正文。AI 可以提出潜在关联候选和理由，但绝不能创建、删除或移动 Relation。"#;
     let mut messages = Vec::new();
     let recent_history = history.unwrap_or_default();
     let skip = recent_history.len().saturating_sub(10);
@@ -3536,6 +4199,19 @@ pub fn run() {
             search_records_filtered,
             list_relations,
             add_relation,
+            remove_relation,
+            get_notebook_storage_config,
+            set_notebook_storage_config,
+            begin_notebook_file_upload,
+            append_notebook_file_upload,
+            finish_notebook_file_upload,
+            upload_notebook_file,
+            open_notebook_file,
+            reveal_notebook_file,
+            get_notebook_file_preview,
+            extract_notebook_file_content,
+            copy_notebook_file,
+            destroy_notebook_file,
             stop_timer,
             export_data,
             create_backup,
@@ -3558,6 +4234,37 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notebook_storage_supports_safe_names_extractable_text_and_preview_encoding() {
+        assert_eq!(safe_file_name("../unsafe:name?.txt"), "_unsafe_name_.txt");
+        assert_eq!(
+            strip_xml("<p>Hello <b>Notebook</b>&amp; AI</p>"),
+            "Hello Notebook & AI"
+        );
+        assert_eq!(base64_encode(b"Jason"), "SmFzb24=");
+        let (text, truncated) = truncate_notebook_text("abcdef".into(), 3);
+        assert!(truncated);
+        assert!(text.starts_with("abc"));
+    }
+
+    #[test]
+    fn notebook_entities_and_relation_fields_are_registered() {
+        for entity in [
+            "notes",
+            "notebookCategories",
+            "notebookFolders",
+            "notebookFiles",
+        ] {
+            assert!(is_entity(entity));
+        }
+        assert_eq!(
+            expected_entity("notebookCategoryId"),
+            Some("notebookCategories")
+        );
+        assert_eq!(expected_entity("notebookFolderId"), Some("notebookFolders"));
+    }
+
     #[test]
     fn outcome_and_finance_entities_and_agent_tools_are_registered() {
         for entity in [
@@ -3581,6 +4288,16 @@ mod tests {
             expected_entity("refundOfTransactionId"),
             Some("financialTransactions")
         );
+    }
+
+    #[test]
+    fn notebook_text_extraction_keeps_searchable_content_separate_from_the_source_file() {
+        let path = std::env::temp_dir().join(format!("jason-os-notebook-{}.txt", now()));
+        fs::write(&path, "Shopify SEO research\n关键词：自然流量").unwrap();
+        let extracted = extract_notebook_content(&path, "txt").unwrap();
+        assert!(extracted.contains("Shopify SEO research"));
+        assert!(path.exists());
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -3651,6 +4368,34 @@ mod tests {
             &json!({"corePrinciple":"逆向思考"})
         )
         .is_err());
+    }
+
+    #[test]
+    fn agent_note_creation_strips_relation_fields() {
+        let connection = relationship_test_db();
+        let input = apply_agent_context(
+            &connection,
+            "notes",
+            "CREATE",
+            &json!({
+                "title": "一个想法",
+                "content": "正文",
+                "projectIds": ["project-1"],
+                "taskIds": ["task-1"],
+                "insightIds": ["insight-1"],
+                "timeLogIds": ["timelog-1"],
+                "mentalModelIds": ["model-1"]
+            }),
+            &json!({"currentProjectId": "project-1"}),
+        )
+        .unwrap();
+        assert_eq!(input["title"], "一个想法");
+        assert_eq!(input["content"], "正文");
+        assert!(input.get("projectIds").is_none());
+        assert!(input.get("taskIds").is_none());
+        assert!(input.get("insightIds").is_none());
+        assert!(input.get("timeLogIds").is_none());
+        assert!(input.get("mentalModelIds").is_none());
     }
 
     #[test]

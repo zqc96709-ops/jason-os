@@ -2,7 +2,7 @@ import { timelineOccurredAt, timelineRecords } from './timeline'
 export type Entity =
   | 'goals' | 'keyResults' | 'projects' | 'tasks' | 'hypotheses' | 'experiments' | 'timeLogs' | 'results'
   | 'reviews' | 'knowledge' | 'insights' | 'principles' | 'mentalModels' | 'mentalModelUsages'
-  | 'decisions' | 'inbox' | 'events' | 'people' | 'dataRecords' | 'attachments' | 'timelineEvents' | 'agentRuns' | 'agentActions'
+  | 'decisions' | 'notes' | 'notebookCategories' | 'notebookFolders' | 'notebookFiles' | 'inbox' | 'events' | 'people' | 'dataRecords' | 'attachments' | 'timelineEvents' | 'agentRuns' | 'agentActions'
   | 'externalSources' | 'signals' | 'opportunities' | 'intelligenceBriefs'
   | 'financialAccounts' | 'financialCategories' | 'financialTransactions'
   | 'decisionFrameworks' | 'ceoPrinciples' | 'decisionLenses'
@@ -137,16 +137,33 @@ export const entities: EntityConfig[] = [
     { key: 'whatWorked', label: '哪些有效', multiline: true }, { key: 'whatFailed', label: '哪些无效', multiline: true }, { key: 'lesson', label: '学到了什么', multiline: true },
     { key: 'doDifferently', label: '下次如何不同', multiline: true }, { key: 'nextAction', label: '下一步行动', multiline: true },
     { key: 'taskId', label: '任务', relation: 'tasks' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'goalId', label: '目标', relation: 'goals' },
-    { key: 'periodStart', label: '周期开始', type: 'date' }, { key: 'periodEnd', label: '周期结束', type: 'date' }, { key: 'resultId', label: '结果', relation: 'results' }, { key: 'decisionId', label: '决策', relation: 'decisions' },
+    { key: 'periodStart', label: '周期开始', type: 'date' }, { key: 'periodEnd', label: '周期结束', type: 'date' }, { key: 'resultId', label: '结果', relation: 'results' }, { key: 'decisionId', label: '决策', relation: 'decisions' }, { key: 'sourceNoteId', label: '来源笔记', relation: 'notes' },
   ] },
   { entity: 'knowledge', label: '知识', singular: '知识', icon: '⌘', titleKey: 'title', description: '保存可以长期复用的信息与理解。', fields: [
     { key: 'title', label: '标题' }, { key: 'content', label: '内容', multiline: true }, { key: 'source', label: '来源' }, { key: 'category', label: '分类' },
-    { key: 'tags', label: '标签（逗号分隔）' }, { key: 'projectIds', label: '相关项目', relation: 'projects', multiple: true }, { key: 'reviewIds', label: '相关复盘', relation: 'reviews', multiple: true },
+    { key: 'tags', label: '标签（逗号分隔）' }, { key: 'projectIds', label: '相关项目', relation: 'projects', multiple: true }, { key: 'reviewIds', label: '相关复盘', relation: 'reviews', multiple: true }, { key: 'sourceNoteId', label: '来源笔记', relation: 'notes' },
+  ] },
+  { entity: 'notes', label: 'Notebook', singular: '笔记', icon: '✎', titleKey: 'title', description: '自由记录任何想法、观察、经历或灵感，不需要先判断分类或关系。', fields: [
+    { key: 'title', label: '标题' }, { key: 'content', label: '正文', multiline: true },
+    { key: 'type', label: '类型', type: 'select', options: [option('NOTE', '笔记'), option('IDEA', '想法'), option('JOURNAL', '日记'), option('OBSERVATION', '观察'), option('LEARNING', '学习'), option('DRAFT', '草稿')] },
+    { key: 'status', label: '状态', type: 'select', options: [option('INBOX', 'Inbox'), option('ACTIVE', 'Notes'), option('ARCHIVED', '已归档')] },
+    { key: 'notebookCategoryId', label: 'Notebook 分类', relation: 'notebookCategories' }, { key: 'notebookFolderId', label: 'Notebook 文件夹', relation: 'notebookFolders' },
+    { key: 'favorite', label: '收藏', type: 'select', options: [option('false', '否'), option('true', '是')] },
+  ] },
+  { entity: 'notebookCategories', label: 'Notebook 分类', singular: '分类', icon: '▦', titleKey: 'name', description: 'Notebook 内部的自定义分类；不是 Jason OS Project。', fields: [
+    { key: 'name', label: '分类名称' }, { key: 'description', label: '说明', multiline: true }, { key: 'sortOrder', label: '排序', type: 'number' }, { key: 'parentNotebookCategoryId', label: '上级分类', relation: 'notebookCategories' },
+  ] },
+  { entity: 'notebookFolders', label: 'Notebook 文件夹', singular: '文件夹', icon: '□', titleKey: 'name', description: '用于整理 Notebook 笔记与文件，支持子文件夹。', fields: [
+    { key: 'name', label: '文件夹名称' }, { key: 'notebookCategoryId', label: '所属分类', relation: 'notebookCategories' }, { key: 'parentNotebookFolderId', label: '上级文件夹', relation: 'notebookFolders' }, { key: 'sortOrder', label: '排序', type: 'number' }, { key: 'favorite', label: '收藏', type: 'select', options: [option('false', '否'), option('true', '是')] },
+  ] },
+  { entity: 'notebookFiles', label: 'Notebook 文件', singular: '文件', icon: '⊞', titleKey: 'name', description: 'Notebook 中保存的本地文件元数据；原始文件保存在本地 Storage。', fields: [
+    { key: 'name', label: '文件名' }, { key: 'originalName', label: '原始文件名' }, { key: 'extension', label: '扩展名' }, { key: 'mimeType', label: 'MIME 类型' }, { key: 'size', label: '大小（bytes）', type: 'number' }, { key: 'storagePath', label: '存储路径', readOnly: true }, { key: 'extractStatus', label: '内容提取状态', readOnly: true }, { key: 'extractedContent', label: '已提取文本', multiline: true, readOnly: true },
+    { key: 'notebookCategoryId', label: 'Notebook 分类', relation: 'notebookCategories' }, { key: 'notebookFolderId', label: 'Notebook 文件夹', relation: 'notebookFolders' }, { key: 'status', label: '状态', type: 'select', options: [option('ACTIVE', 'Active'), option('ARCHIVED', '已归档')] }, { key: 'favorite', label: '收藏', type: 'select', options: [option('false', '否'), option('true', '是')] },
   ] },
   { entity: 'insights', label: '洞见', singular: '洞见', icon: '✦', titleKey: 'statement', description: '从经验中提炼“我发现了什么”。', fields: [
     { key: 'statement', label: '洞见' }, { key: 'explanation', label: '解释', multiline: true }, { key: 'evidence', label: '证据', multiline: true },
     { key: 'source', label: '来源' }, { key: 'taskId', label: '任务', relation: 'tasks' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'goalId', label: '目标', relation: 'goals' },
-    { key: 'reviewId', label: '复盘', relation: 'reviews' }, { key: 'resultId', label: '结果', relation: 'results' }, { key: 'knowledgeId', label: '知识', relation: 'knowledge' }, { key: 'confidence', label: '置信度（0-100）', type: 'number' },
+    { key: 'reviewId', label: '复盘', relation: 'reviews' }, { key: 'resultId', label: '结果', relation: 'results' }, { key: 'knowledgeId', label: '知识', relation: 'knowledge' }, { key: 'sourceNoteId', label: '来源笔记', relation: 'notes' }, { key: 'confidence', label: '置信度（0-100）', type: 'number' },
   ] },
   { entity: 'principles', label: '原则', singular: '原则', icon: '∴', titleKey: 'statement', description: '记录长期相信并愿意用于决策的原则。', fields: [
     { key: 'statement', label: '原则' }, { key: 'explanation', label: '解释', multiline: true }, { key: 'evidence', label: '证据', multiline: true },
@@ -162,7 +179,7 @@ export const entities: EntityConfig[] = [
     { key: 'assumptions', label: '关键假设', multiline: true }, { key: 'validationMethods', label: '验证方式', multiline: true }, { key: 'validationCost', label: '验证成本', multiline: true }, { key: 'validationResult', label: '验证结果', multiline: true }, { key: 'confidenceBefore', label: '验证前置信度', type: 'number' }, { key: 'confidenceAfter', label: '验证后置信度', type: 'number' }, { key: 'stopConditions', label: '停止条件', multiline: true },
     { key: 'tags', label: '标签（逗号分隔）' }, { key: 'difficulty', label: '难度', type: 'select', options: [option('beginner', '入门'), option('intermediate', '进阶'), option('advanced', '高级')] }, { key: 'status', label: '状态', type: 'select', options: [option('draft', '草稿'), option('active', '启用'), option('archived', '归档')] }, { key: 'needsReview', label: '需要人工复核' }, { key: 'usageCount', label: '调用次数', type: 'number' }, { key: 'successCount', label: '有效次数', type: 'number' }, { key: 'effectivenessScore', label: '有效性评分（1-5）', type: 'number' },
     { key: 'framework', label: '框架（兼容）', multiline: true }, { key: 'questions', label: '关键问题（兼容旧记录）', multiline: true }, { key: 'method', label: '方法（兼容旧记录）', multiline: true }, { key: 'application', label: '应用（兼容旧记录）', multiline: true }, { key: 'limitations', label: '局限', multiline: true }, { key: 'examples', label: '示例', multiline: true },
-    { key: 'insightId', label: '来源洞见', relation: 'insights' }, { key: 'reviewId', label: '来源复盘', relation: 'reviews' }, { key: 'principleIds', label: '相关原则', relation: 'principles', multiple: true },
+    { key: 'insightId', label: '来源洞见', relation: 'insights' }, { key: 'reviewId', label: '来源复盘', relation: 'reviews' }, { key: 'sourceNoteId', label: '来源笔记', relation: 'notes' }, { key: 'principleIds', label: '相关原则', relation: 'principles', multiple: true },
   ] },
   { entity: 'mentalModelUsages', label: '模型使用', singular: '模型使用记录', icon: '⇄', titleKey: 'context', description: '追踪思维模型是否真正改善了结果。', fields: [
     { key: 'mentalModelId', label: '思维模型', relation: 'mentalModels' }, { key: 'decisionId', label: '决策', relation: 'decisions' },
@@ -181,7 +198,7 @@ export const entities: EntityConfig[] = [
     { key: 'actualRevenueMinor', label: '实际收入', type: 'money', currencyKey: 'currency' }, { key: 'actualCostMinor', label: '实际成本', type: 'money', currencyKey: 'currency' }, { key: 'actualTimeMinutes', label: '实际时间（分钟）', type: 'number' }, { key: 'actualCompletionDate', label: '实际完成日期', type: 'date' },
     { key: 'taskId', label: '任务', relation: 'tasks' }, { key: 'projectId', label: '项目', relation: 'projects' }, { key: 'goalId', label: '目标', relation: 'goals' },
     { key: 'knowledgeId', label: '知识', relation: 'knowledge' }, { key: 'insightId', label: '洞见', relation: 'insights' }, { key: 'resultId', label: '结果', relation: 'results' }, { key: 'reviewId', label: '复盘', relation: 'reviews' },
-    { key: 'signalIds', label: '来源信号', relation: 'signals', multiple: true }, { key: 'opportunityId', label: '来源机会', relation: 'opportunities' },
+    { key: 'signalIds', label: '来源信号', relation: 'signals', multiple: true }, { key: 'opportunityId', label: '来源机会', relation: 'opportunities' }, { key: 'sourceNoteId', label: '来源笔记', relation: 'notes' },
     { key: 'principleIds', label: '调用原则', relation: 'principles', multiple: true }, { key: 'mentalModelIds', label: '调用思维模型', relation: 'mentalModels', multiple: true },
   ] },
   { entity: 'externalSources', label: '情报源', singular: '情报源', icon: '◉', titleKey: 'name', description: '定义 Jason OS 应持续观察的关键词、账号、竞品和主题。', fields: [

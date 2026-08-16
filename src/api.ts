@@ -15,6 +15,9 @@ export type BackupInfo = { name: string; path: string; size: number; modified: s
 export type FinanceSummary = { baseCurrency: string; incomeMinor: string; expenseMinor: string; cashNetMinor: string; managementContributionMinor: string; timeMinutes: number; unitTimeContributionMinor?: string; postedTransactions: number; outcomeCount: number; verifiedOutcomeCount: number; dataCoverage: number; warnings: string[] }
 export type CaptureProviderId = 'redfox' | 'apify' | 'tikhub' | 'scrapecreators'
 export type CaptureProviderConfig = { providers: { id: CaptureProviderId; label: string; configured: boolean; supportedPlatforms: string[]; automaticSync: boolean; mediaDownload: boolean }[] }
+export type NotebookUploadInput = { file: File; notebookCategoryId?: string; notebookFolderId?: string; relativePath?: string }
+export type NotebookFilePreview = { kind: 'text' | 'pdf' | 'image' | 'audio' | 'video' | 'unsupported'; text?: string; dataUrl?: string; reason?: string; extractStatus?: string }
+export type NotebookStorageConfig = { maxFileSize: number; chunkSize: number }
 
 const key = 'jason-os-browser-records'
 const browser = () => !('__TAURI_INTERNALS__' in window)
@@ -43,6 +46,24 @@ export const api = {
     return read().filter(active).filter((record) => record.id !== id && Object.entries(record).some(([field, value]) => field.endsWith('Id') && value === id || field.endsWith('Ids') && String(value || '').split(',').map((part) => part.trim()).includes(id)))
   },
   async addRelation(fromId: string, toId: string, relationType = 'manual') { if (!browser()) return invoke('add_relation', { fromId, toId, relationType }) },
+  async removeRelation(fromId: string, toId: string, relationType = 'manual') { if (!browser()) return invoke('remove_relation', { fromId, toId, relationType }) },
+  async getNotebookStorageConfig(): Promise<NotebookStorageConfig> { return browser() ? { maxFileSize: 1024 * 1024 * 1024, chunkSize: 2 * 1024 * 1024 } : invoke('get_notebook_storage_config') },
+  async setNotebookStorageConfig(maxFileSize: number): Promise<NotebookStorageConfig> { if (browser()) throw new Error('浏览器模式不能配置桌面 Storage。'); return invoke('set_notebook_storage_config', { maxFileSize }) },
+  async uploadNotebookFile(input: NotebookUploadInput): Promise<RecordData> {
+    if (browser()) return this.save('notebookFiles', { name: input.file.name, originalName: input.file.name, mimeType: input.file.type, size: input.file.size, notebookCategoryId: input.notebookCategoryId, notebookFolderId: input.notebookFolderId, relativePath: input.relativePath, status: 'ACTIVE' })
+    const started = await invoke<{ uploadId: string; chunkSize: number }>('begin_notebook_file_upload', { name: input.file.name, size: input.file.size })
+    for (let offset = 0; offset < input.file.size; offset += started.chunkSize) {
+      const chunk = new Uint8Array(await input.file.slice(offset, offset + started.chunkSize).arrayBuffer())
+      await invoke('append_notebook_file_upload', { uploadId: started.uploadId, bytes: Array.from(chunk) })
+    }
+    return invoke('finish_notebook_file_upload', { uploadId: started.uploadId, name: input.file.name, mimeType: input.file.type || 'application/octet-stream', notebookCategoryId: input.notebookCategoryId, notebookFolderId: input.notebookFolderId, relativePath: input.relativePath })
+  },
+  async openNotebookFile(id: string): Promise<void> { if (browser()) throw new Error('浏览器模式没有本地 Storage 文件可打开。'); return invoke('open_notebook_file', { id }) },
+  async revealNotebookFile(id: string): Promise<void> { if (browser()) throw new Error('浏览器模式没有本地 Storage 文件可显示。'); return invoke('reveal_notebook_file', { id }) },
+  async previewNotebookFile(id: string): Promise<NotebookFilePreview> { if (browser()) return { kind: 'unsupported', reason: '浏览器模式不会保存原始文件。' }; return invoke('get_notebook_file_preview', { id }) },
+  async extractNotebookFile(id: string): Promise<RecordData> { if (browser()) throw new Error('浏览器模式不能提取本地文件内容。'); return invoke('extract_notebook_file_content', { id }) },
+  async copyNotebookFile(id: string, notebookCategoryId?: string, notebookFolderId?: string): Promise<RecordData> { if (browser()) throw new Error('浏览器模式不能复制本地文件。'); return invoke('copy_notebook_file', { id, notebookCategoryId, notebookFolderId }) },
+  async destroyNotebookFile(id: string): Promise<void> { if (browser()) throw new Error('浏览器模式不能永久删除本地文件。'); return invoke('destroy_notebook_file', { id }) },
   async stopTimer(id: string, endAt: string, durationMinutes: number): Promise<RecordData> { if (!browser()) return invoke('stop_timer', { id, endAt, durationMinutes }); const timer = read().find((record) => record.id === id)!; return this.save('timeLogs', { ...timer, endAt, durationMinutes, isRunning: false }) },
   async export(format: 'json' | 'markdown' | 'csv'): Promise<string> { if (!browser()) return invoke('export_data', { format }); const content = format === 'json' ? JSON.stringify(read(), null, 2) : read().map((record) => JSON.stringify(record)).join('\n'); const blob = new Blob([content], { type: 'text/plain' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `jason-os.${format}`; anchor.click(); URL.revokeObjectURL(url); return '已在浏览器模式下载' },
   async backup(): Promise<string> { return browser() ? '浏览器模式没有 SQLite 数据库可供备份。' : invoke('create_backup') },

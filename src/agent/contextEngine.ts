@@ -1,7 +1,7 @@
 import type { Entity, RecordData } from '../model'
 import type { AgentContext, ChatMessage } from './types'
 
-const routeEntity: Partial<Record<string, Entity>> = { tasks: 'tasks', time: 'timeLogs', projects: 'projects', outcomes: 'results', finance: 'financialTransactions', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisions', events: 'events', people: 'people', externalIntelligence: 'signals' }
+const routeEntity: Partial<Record<string, Entity>> = { tasks: 'tasks', time: 'timeLogs', projects: 'projects', outcomes: 'results', finance: 'financialTransactions', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', notebook: 'notes', decisions: 'decisions', events: 'events', people: 'people', externalIntelligence: 'signals' }
 const stringValue = (value: unknown) => typeof value === 'string' && value ? value : undefined
 
 export function buildAgentContext({ currentRoute, records, selectedProjectId, detailId, conversation }: { currentRoute: string; records: RecordData[]; selectedProjectId: string | null; detailId: string | null; conversation: ChatMessage[] }): AgentContext {

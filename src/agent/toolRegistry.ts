@@ -5,7 +5,8 @@ import type { Entity } from '../model'
 const outputSchema: JsonObjectSchema = { type: 'object', properties: { ok: { type: 'boolean' }, entityId: { type: 'string' }, message: { type: 'string' } }, required: ['ok'], additionalProperties: true }
 const inputFor = (entity: Entity, update = false): JsonObjectSchema => {
   const schema = schemaFor(entity)
-  return { type: 'object', properties: Object.fromEntries((schema?.fields || []).map((field) => [field, { type: field.endsWith('Ids') ? 'array' : 'string' }])), required: update ? ['id'] : schema?.requiredFields, additionalProperties: false }
+  const fields = entity === 'notes' ? ['title', 'content', 'type', 'status'] : (schema?.fields || [])
+  return { type: 'object', properties: Object.fromEntries(fields.map((field) => [field, { type: field.endsWith('Ids') ? 'array' : 'string' }])), required: update ? ['id'] : schema?.requiredFields, additionalProperties: false }
 }
 const tool = (name: string, description: string, entity: Entity, actionType: ToolDefinition['actionType'], riskLevel: AgentRiskLevel, requiresConfirmation: boolean): ToolDefinition => {
   const inputSchema = inputFor(entity, actionType === 'UPDATE' || actionType === 'COMPLETE')
@@ -19,6 +20,19 @@ export const toolRegistry: ToolDefinition[] = [
   tool('getMentalModel', '读取一个思维模型', 'mentalModels', 'READ', 'READ', false),
   tool('searchMentalModels', '搜索可用于当前问题的思维模型', 'mentalModels', 'READ', 'READ', false),
   tool('updateMentalModel', '更新已有思维模型', 'mentalModels', 'UPDATE', 'MEDIUM_WRITE', true),
+  tool('createNote', '把一段内容保存为 Notebook 自由笔记', 'notes', 'CREATE', 'LOW_WRITE', true),
+  tool('getNote', '读取一条 Notebook 笔记', 'notes', 'READ', 'READ', false),
+  tool('searchNotes', '搜索历史 Notebook 笔记', 'notes', 'READ', 'READ', false),
+  tool('updateNote', '更新已有 Notebook 笔记', 'notes', 'UPDATE', 'MEDIUM_WRITE', true),
+  tool('createNotebookCategory', '创建 Notebook 自定义分类；不是项目', 'notebookCategories', 'CREATE', 'LOW_WRITE', true),
+  tool('getNotebookCategories', '读取 Notebook 分类', 'notebookCategories', 'READ', 'READ', false),
+  tool('updateNotebookCategory', '更新 Notebook 分类', 'notebookCategories', 'UPDATE', 'MEDIUM_WRITE', true),
+  tool('createNotebookFolder', '创建 Notebook 文件夹或子文件夹', 'notebookFolders', 'CREATE', 'LOW_WRITE', true),
+  tool('getNotebookFolders', '读取 Notebook 文件夹', 'notebookFolders', 'READ', 'READ', false),
+  tool('updateNotebookFolder', '更新 Notebook 文件夹', 'notebookFolders', 'UPDATE', 'MEDIUM_WRITE', true),
+  tool('getNotebookFiles', '读取 Notebook 文件元数据', 'notebookFiles', 'READ', 'READ', false),
+  tool('searchNotebookFiles', '按文件名、类型、目录和元数据搜索 Notebook 文件', 'notebookFiles', 'READ', 'READ', false),
+  tool('updateNotebookFile', '更新 Notebook 文件元数据或移动文件；不修改原始文件内容', 'notebookFiles', 'UPDATE', 'MEDIUM_WRITE', true),
   tool('createKnowledge', '创建知识记录', 'knowledge', 'CREATE', 'LOW_WRITE', true), tool('getKnowledge', '读取知识', 'knowledge', 'READ', 'READ', false), tool('searchKnowledge', '搜索知识', 'knowledge', 'READ', 'READ', false), tool('updateKnowledge', '更新知识', 'knowledge', 'UPDATE', 'MEDIUM_WRITE', true),
   tool('createGoal', '创建目标', 'goals', 'CREATE', 'LOW_WRITE', true), tool('getGoal', '读取目标', 'goals', 'READ', 'READ', false), tool('searchGoals', '搜索目标', 'goals', 'READ', 'READ', false), tool('updateGoal', '更新目标', 'goals', 'UPDATE', 'MEDIUM_WRITE', true),
   tool('createProject', '创建项目并继承当前目标', 'projects', 'CREATE', 'LOW_WRITE', true), tool('getProject', '读取项目', 'projects', 'READ', 'READ', false), tool('searchProjects', '搜索项目', 'projects', 'READ', 'READ', false), tool('updateProject', '更新项目', 'projects', 'UPDATE', 'MEDIUM_WRITE', true),

@@ -13,6 +13,8 @@ describe('Jason OS Agent registries and context', () => {
     expect(toolRegistry.length).toBeGreaterThanOrEqual(30)
     expect(toolFor('readWorkspaceDocument')).toMatchObject({ entity: 'dataRecords', actionType: 'READ', riskLevel: 'READ', requiresConfirmation: false })
     expect(toolFor('importWorkspaceDocumentToNotebook')).toMatchObject({ entity: 'notebookFiles', actionType: 'CREATE', riskLevel: 'MEDIUM_WRITE', requiresConfirmation: true })
+    expect(schemaFor('profiles')?.allowedActions).toContain('updateProfile')
+    expect(toolFor('updateProfile')).toMatchObject({ entity: 'profiles', actionType: 'UPDATE', riskLevel: 'MEDIUM_WRITE', requiresConfirmation: true })
   })
 
   it('registers External Intelligence schemas, relations, and guarded write tools', () => {

@@ -5,7 +5,7 @@ const required: Partial<Record<Entity, string[]>> = {
   goals: ['title'], projects: ['title'], tasks: ['title'], timeLogs: ['title', 'startAt'], results: ['title'], knowledge: ['title', 'content'], reviews: ['title'], insights: ['statement'], principles: ['statement'], mentalModels: ['name'], notes: ['title'], notebookCategories: ['name'], notebookFolders: ['name'], notebookFiles: ['name'], decisions: ['title'], events: ['title'], people: ['name'], externalSources: ['name'], signals: ['title'], opportunities: ['title'], intelligenceBriefs: ['title'], financialAccounts: ['name'], financialCategories: ['name'], financialTransactions: ['title', 'transactionType', 'amountMinor'],
 }
 
-const allowed: Partial<Record<Entity, string[]>> = {
+const allowed: Partial<Record<Entity, string[]>> = { profiles: ['getProfile', 'updateProfile'],
   goals: ['createGoal', 'getGoal', 'searchGoals', 'updateGoal'],
   projects: ['createProject', 'getProject', 'searchProjects', 'updateProject'],
   tasks: ['createTask', 'getTask', 'searchTasks', 'updateTask', 'completeTask'],
@@ -25,7 +25,7 @@ const allowed: Partial<Record<Entity, string[]>> = {
 
 const relationMap = (entity: Entity) => Object.fromEntries(entities.find((item) => item.entity === entity)?.fields.filter((field) => field.relation).map((field) => [field.key, field.relation!]) || [])
 
-export const schemaRegistry: SchemaDefinition[] = entities.filter((config) => ['goals', 'projects', 'tasks', 'timeLogs', 'results', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels', 'notes', 'notebookCategories', 'notebookFolders', 'notebookFiles', 'decisions', 'events', 'people', 'externalSources', 'signals', 'opportunities', 'intelligenceBriefs', 'financialAccounts', 'financialCategories', 'financialTransactions'].includes(config.entity)).map((config) => ({
+export const schemaRegistry: SchemaDefinition[] = entities.filter((config) => ['profiles', 'goals', 'projects', 'tasks', 'timeLogs', 'results', 'knowledge', 'reviews', 'insights', 'principles', 'mentalModels', 'notes', 'notebookCategories', 'notebookFolders', 'notebookFiles', 'decisions', 'events', 'people', 'externalSources', 'signals', 'opportunities', 'intelligenceBriefs', 'financialAccounts', 'financialCategories', 'financialTransactions'].includes(config.entity)).map((config) => ({
   entityName: config.entity,
   description: config.description,
   fields: config.fields.map((field) => field.key),

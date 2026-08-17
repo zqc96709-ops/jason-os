@@ -5,7 +5,7 @@ export type Entity =
   | 'decisions' | 'notes' | 'notebookCategories' | 'notebookFolders' | 'notebookFiles' | 'inbox' | 'events' | 'people' | 'dataRecords' | 'attachments' | 'timelineEvents' | 'agentRuns' | 'agentActions'
   | 'externalSources' | 'signals' | 'opportunities' | 'intelligenceBriefs'
   | 'financialAccounts' | 'financialCategories' | 'financialTransactions'
-  | 'decisionFrameworks' | 'ceoPrinciples' | 'decisionLenses'
+  | 'decisionFrameworks' | 'ceoPrinciples' | 'decisionLenses' | 'profiles'
 
 export type RecordData = Record<string, unknown> & {
   id: string
@@ -52,6 +52,12 @@ const statuses = {
 const priorities = [option('high', '高'), option('medium', '中'), option('low', '低')]
 
 export const entities: EntityConfig[] = [
+  { entity: 'profiles', label: '我的档案', singular: '档案', icon: '◌', titleKey: 'title', description: 'Jason OS 的长期个人与 AI 上下文；不作为业务模块或左侧导航。', fields: [
+    { key: 'title', label: '档案名称' }, { key: 'name', label: '姓名' }, { key: 'nickname', label: '昵称' }, { key: 'avatar', label: '头像 URL（可选）' },
+    { key: 'occupation', label: '职业 / 身份' }, { key: 'role', label: '当前角色' }, { key: 'organization', label: '公司 / 组织' }, { key: 'workDomains', label: '主要工作领域（逗号分隔）' },
+    { key: 'longTermDirection', label: '长期方向', multiline: true }, { key: 'currentFocus', label: '当前重点（逗号分隔）' }, { key: 'workStyle', label: '我的工作方式', multiline: true }, { key: 'decisionStyle', label: '我的决策方式', multiline: true }, { key: 'commonTools', label: '常用工具（逗号分隔）' }, { key: 'otherContext', label: '其他长期背景', multiline: true },
+    { key: 'aiAssistancePreference', label: '希望 AI 如何帮助我', multiline: true }, { key: 'aiResponsePreference', label: '我的回答偏好', multiline: true }, { key: 'aiDecisionPreference', label: '我的决策偏好', multiline: true }, { key: 'aiOtherContext', label: 'AI 其他上下文', multiline: true },
+  ] },
   { entity: 'goals', label: '目标', singular: '目标', icon: '◎', titleKey: 'title', description: '目标定义方向与为什么值得投入。', fields: [
     { key: 'title', label: '目标' }, { key: 'description', label: '说明', multiline: true }, { key: 'why', label: '为什么重要', multiline: true },
     { key: 'status', label: '状态', type: 'select', options: statuses.goal }, { key: 'timeframe', label: '时间范围' },

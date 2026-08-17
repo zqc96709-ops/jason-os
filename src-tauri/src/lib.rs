@@ -75,6 +75,7 @@ const ENTITIES: &[&str] = &[
     "decisionFrameworks",
     "ceoPrinciples",
     "decisionLenses",
+    "profiles",
 ];
 
 fn now() -> String {
@@ -3307,6 +3308,7 @@ fn agent_tool_metadata(tool: &str) -> Option<(&'static str, &'static str, bool, 
         "createNotebookFolder" => Some(("notebookFolders", "LOW_WRITE", true, "CREATE")),
         "updateNotebookFolder" => Some(("notebookFolders", "MEDIUM_WRITE", true, "UPDATE")),
         "updateNotebookFile" => Some(("notebookFiles", "MEDIUM_WRITE", true, "UPDATE")),
+        "updateProfile" => Some(("profiles", "MEDIUM_WRITE", true, "UPDATE")),
         "importWorkspaceDocumentToNotebook" => {
             Some(("notebookFiles", "MEDIUM_WRITE", true, "CREATE"))
         }
@@ -3994,6 +3996,123 @@ fn cancel_ai_action(app: AppHandle, action_id: String) -> Result<Value, String> 
     Ok(json!({"action": saved}))
 }
 
+fn profile_field(data: &Value, key: &str, limit: usize) -> Option<String> {
+    data.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.chars().take(limit).collect())
+}
+
+fn profile_context_for_question(
+    connection: &Connection,
+    question: &str,
+) -> Result<Option<Value>, String> {
+    let profile = connection
+        .query_row(
+            "SELECT id, entity, data_json, created_at, updated_at FROM records WHERE entity='profiles' AND deleted_at IS NULL ORDER BY updated_at DESC LIMIT 1",
+            [],
+            |row| Ok(value_to_record(row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(profile) = profile else {
+        return Ok(None);
+    };
+    let is_related = |keywords: &[&str]| keywords.iter().any(|keyword| question.contains(keyword));
+    let use_identity = is_related(&[
+        "我是谁",
+        "身份",
+        "职业",
+        "角色",
+        "公司",
+        "组织",
+        "工作领域",
+        "背景",
+    ]);
+    let use_personal = use_identity
+        || is_related(&[
+            "长期方向",
+            "方向",
+            "重点",
+            "工作方式",
+            "项目",
+            "推进",
+            "决策",
+            "业务",
+            "工具",
+            "优先",
+        ]);
+    let use_ai = is_related(&[
+        "AI",
+        "ai",
+        "助理",
+        "如何帮助",
+        "怎么帮助",
+        "回答偏好",
+        "回复偏好",
+        "沟通",
+        "以后",
+    ]);
+    if !use_identity && !use_personal && !use_ai {
+        return Ok(None);
+    }
+
+    let mut sections = Vec::new();
+    let append = |label: &str, key: &str, limit: usize, target: &mut Vec<String>| {
+        if let Some(value) = profile_field(&profile, key, limit) {
+            target.push(format!("{label}：{value}"));
+        }
+    };
+    if use_identity {
+        let mut lines = Vec::new();
+        append("姓名", "name", 80, &mut lines);
+        append("昵称", "nickname", 80, &mut lines);
+        append("职业 / 身份", "occupation", 120, &mut lines);
+        append("当前角色", "role", 120, &mut lines);
+        append("公司 / 组织", "organization", 120, &mut lines);
+        append("主要工作领域", "workDomains", 180, &mut lines);
+        if !lines.is_empty() {
+            sections.push(format!("基础资料\n{}", lines.join("\n")));
+        }
+    }
+    if use_personal {
+        let mut lines = Vec::new();
+        append("长期方向", "longTermDirection", 480, &mut lines);
+        append("当前重点", "currentFocus", 240, &mut lines);
+        append("工作方式", "workStyle", 420, &mut lines);
+        append("决策方式", "decisionStyle", 420, &mut lines);
+        append("常用工具", "commonTools", 180, &mut lines);
+        append("其他长期背景", "otherContext", 320, &mut lines);
+        if !lines.is_empty() {
+            sections.push(format!("个人上下文\n{}", lines.join("\n")));
+        }
+    }
+    if use_ai {
+        let mut lines = Vec::new();
+        append(
+            "希望 AI 如何帮助我",
+            "aiAssistancePreference",
+            480,
+            &mut lines,
+        );
+        append("回答偏好", "aiResponsePreference", 360, &mut lines);
+        append("决策偏好", "aiDecisionPreference", 360, &mut lines);
+        append("AI 其他上下文", "aiOtherContext", 260, &mut lines);
+        if !lines.is_empty() {
+            sections.push(format!("AI 上下文\n{}", lines.join("\n")));
+        }
+    }
+    if sections.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(json!({
+        "id": profile["id"], "entity": "profiles", "type": "PROFILE_CONTEXT",
+        "title": "与当前问题相关的我的档案", "content": sections.join("\n\n"),
+        "evidenceLevel": "USER_CONFIRMED"
+    })))
+}
+
 #[tauri::command]
 async fn ask_chief(
     app: AppHandle,
@@ -4157,6 +4276,7 @@ fn ask_chief_blocking(
     let model = selected_model(&connection, &provider)?;
     let page_context = compact_for_ai(&context.unwrap_or_else(|| json!({})), 0);
     let mut local_context = search_filtered(&connection, &question, &[])?;
+    local_context.retain(|record| record["entity"].as_str() != Some("profiles"));
     let mut context_ids = page_context
         .get("selectedItems")
         .and_then(Value::as_array)
@@ -4194,6 +4314,9 @@ fn ask_chief_blocking(
                 local_context.push(record);
             }
         }
+    }
+    if let Some(profile_context) = profile_context_for_question(&connection, &question)? {
+        local_context.push(profile_context);
     }
     for record in list_records(app.clone(), "mentalModels".into())?
         .into_iter()
@@ -4298,7 +4421,9 @@ fn ask_chief_blocking(
 18. 用户说“保存到 Notebook”“记一条想法”“随手记下来”时使用 createNote 生成 Action 预览，intent=SAVE_NOTE 或 CREATE_NOTE；Note 不要求分类或关联，title 必填，content 可选。
 19. 当用户要求理解、总结或查找 Notebook 文件时，只能使用文件已提取文本和 Metadata；若 extractStatus 不是 READY，必须说明文件仍可保存但尚无可用正文。AI 可以提出潜在关联候选和理由，但绝不能创建、删除或移动 Relation。
 20. 当相关本地记录中存在 type=WORKSPACE_DOCUMENT 时，其 content 是用户明确授权读取的 Jason OS docs 文档。必须直接基于该内容回答，不得声称“没有直接读取本地文件的工具”。如果存在 WORKSPACE_DOCUMENT_ERROR，则说明错误原因和允许的 docs/ 路径范围。
-21. 用户明确要求把 WORKSPACE_DOCUMENT 保存、导入或复制到 Notebook 时，使用 importWorkspaceDocumentToNotebook 生成 Action 预览，input 必须包含 name 和 sourcePath。该操作只复制 docs 文件到 Notebook Inbox，不修改源文件；必须等待用户确认后执行。"#;
+21. 用户明确要求把 WORKSPACE_DOCUMENT 保存、导入或复制到 Notebook 时，使用 importWorkspaceDocumentToNotebook 生成 Action 预览，input 必须包含 name 和 sourcePath。该操作只复制 docs 文件到 Notebook Inbox，不修改源文件；必须等待用户确认后执行。
+22. type=PROFILE_CONTEXT 是用户主动保存的长期个人与 AI 上下文。只在它与当前问题直接相关时使用，不能机械复述、不能暴露无关私人资料；当前用户问题和当前页面上下文优先于 Profile。
+23. AI 默认只能读取 Profile。用户明确要求更新我的档案时，只有在存在真实 Profile ID 且字段明确时，才使用 updateProfile 生成 Action 预览；绝不能声称已更新，必须等待用户确认后才写入。"#;
     let mut messages = Vec::new();
     let recent_history = history.unwrap_or_default();
     let skip = recent_history.len().saturating_sub(10);
@@ -4889,8 +5014,29 @@ mod tests {
     }
 
     #[test]
+    fn profile_context_is_related_and_length_limited() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE records(id TEXT PRIMARY KEY,entity TEXT NOT NULL,data_json TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL,deleted_at TEXT);").unwrap();
+        connection.execute(
+            "INSERT INTO records(id,entity,data_json,created_at,updated_at) VALUES (?1,'profiles',?2,'1','2')",
+            params!["profile-1", json!({"name":"Jason","longTermDirection":"打造 AI 驱动的跨境电商业务体系","workStyle":"先建立完整架构，再执行。","aiAssistancePreference":"主动指出风险。"}).to_string()],
+        ).unwrap();
+        let related = profile_context_for_question(&connection, "你知道我的长期方向是什么吗？")
+            .unwrap()
+            .unwrap();
+        assert_eq!(related["type"], "PROFILE_CONTEXT");
+        assert!(related["content"].as_str().unwrap().contains("跨境电商"));
+        assert!(
+            profile_context_for_question(&connection, "2 加 2 等于多少？")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn only_declared_entities_are_accepted() {
         assert!(is_entity("goals"));
+        assert!(is_entity("profiles"));
         assert!(!is_entity("drop table records"));
     }
     #[test]

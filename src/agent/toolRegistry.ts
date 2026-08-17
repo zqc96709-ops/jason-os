@@ -24,6 +24,8 @@ const importWorkspaceDocumentToNotebook: ToolDefinition = {
 
 export const toolRegistry: ToolDefinition[] = [
   tool('readWorkspaceDocument', '读取用户明确指定、且位于 Jason OS docs/ 目录内的本地 Markdown、TXT、JSON 或 CSV 文档；只读，不修改文件。', 'dataRecords', 'READ', 'READ', false),
+  tool('getProfile', '读取当前用户的我的档案与 AI 上下文；仅在当前问题相关时使用。', 'profiles', 'READ', 'READ', false),
+  tool('updateProfile', '更新当前用户的我的档案；必须先向用户展示变更预览并等待确认。', 'profiles', 'UPDATE', 'MEDIUM_WRITE', true),
   importWorkspaceDocumentToNotebook,
   tool('createMentalModel', '保存结构化思维模型到思维模型库', 'mentalModels', 'CREATE', 'LOW_WRITE', true),
   tool('getMentalModel', '读取一个思维模型', 'mentalModels', 'READ', 'READ', false),

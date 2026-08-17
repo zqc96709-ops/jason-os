@@ -18,11 +18,12 @@ import {
   type Entity, type EntityConfig, type FieldOption, type RecordData,
 } from './model'
 
-type View = 'command' | 'today' | 'tasks' | 'time' | 'projects' | 'outcomes' | 'finance' | 'externalIntelligence' | 'notebook' | 'knowledge' | 'reviews' | 'insights' | 'principles' | 'mentalModels' | 'decisions' | 'events' | 'people' | 'timeline' | 'aiNews' | 'settings'
+type View = 'command' | 'today' | 'tasks' | 'time' | 'projects' | 'outcomes' | 'finance' | 'externalIntelligence' | 'notebook' | 'knowledge' | 'reviews' | 'insights' | 'principles' | 'mentalModels' | 'decisions' | 'events' | 'people' | 'timeline' | 'aiNews' | 'settings' | 'profile'
 type EditState = { config: EntityConfig; record?: RecordData; initial?: Partial<RecordData> }
 type Notice = { text: string; tone?: 'success' | 'danger' }
 type TaskView = 'list' | 'kanban' | 'matrix' | 'calendar'
 type TimeRange = 'day' | 'week' | 'month'
+type ProfileSection = 'basic' | 'personal' | 'ai'
 
 const today = () => localDateKey()
 const nowInput = () => new Date().toISOString().slice(0, 16)
@@ -73,6 +74,7 @@ function App() {
   const [aiBusy, setAiBusy] = useState(false)
   const [decisionModelIds, setDecisionModelIds] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('jason-os-decision-model-ids') || '[]') } catch { return [] } })
   const [backups, setBackups] = useState<BackupInfo[]>([])
+  const [profileSection, setProfileSection] = useState<ProfileSection>('basic')
   const noticeTimer = useRef<number | undefined>(undefined)
 
   const refresh = async () => {
@@ -115,6 +117,12 @@ function App() {
   }
   const openCreate = (entity: Entity, initial?: Partial<RecordData>) => setEditing({ config: configFor(entity), initial })
   const saveRecord = async (entity: Entity, data: Partial<RecordData>) => { const url = entity === 'inbox' ? String(data.content || '').match(/https?:\/\/[^\s]+/)?.[0] : undefined; if (url) { const captured = await api.captureLink(url); await refresh(); setEditing(null); showNotice(`${String(captured.platform || '链接')}内容已读取并保存到收集箱。`); return } await api.save(entity, data); await refresh(); setEditing(null); showNotice('已保存到本机。') }
+  const saveProfile = async (data: Record<string, string>) => {
+    const existing = records.find((record) => record.entity === 'profiles')
+    const title = data.name || data.nickname || data.role || '我的档案'
+    await api.save('profiles', { id: existing?.id, ...data, title })
+    await refresh(); showNotice('我的档案已保存到本机。')
+  }
   const saveDecisionAnalysis = async (question: string, analysis: DecisionAnalysis, ceoDecision = '') => {
     const { classification, lens, models, frameworks, assumptions, supportingCase, counterCase, biases, tensions, opportunityCost, informationGaps, minimumValidation, options, recommendation, confidence } = analysis
     await api.save('decisions', {
@@ -218,7 +226,7 @@ function App() {
     { group: '决策', items: [{ view: 'decisions', label: '决策日志', icon: '◆' }] },
     { group: '情境', items: [{ view: 'events', label: '事件', icon: '●' }, { view: 'people', label: '人物', icon: '♙' }, { view: 'timeline', label: '时间线', icon: '⌁' }] },
   ]
-  const pageTitle = view === 'aiNews' ? 'AI News Radar' : nav.flatMap((group) => group.items).find((item) => item.view === view)?.label || (view === 'settings' ? '设置' : 'Jason OS')
+  const pageTitle = view === 'profile' ? '我的档案' : view === 'aiNews' ? 'AI News Radar' : nav.flatMap((group) => group.items).find((item) => item.view === view)?.label || (view === 'settings' ? '设置' : 'Jason OS')
 
   const effectiveSidebarOpen = sidebarOpen || sidebarPeek
   const toggleSidebar = () => { setSidebarPeek(false); setSidebarOpen((open) => !open) }
@@ -230,7 +238,7 @@ function App() {
   return <div className={`app-shell ${effectiveSidebarOpen ? "" : "sidebar-collapsed"} ${sidebarPeek ? "sidebar-peek" : ""} ${aiOpen ? "ai-open" : ""} ${aiResizing ? "ai-resizing" : ""}`} style={{ "--ai-width": `${aiWidth}px` } as React.CSSProperties} onPointerMove={handleShellPointer}>
     <GlobalHeader
       query={searchQuery} onQuery={(value) => { setSearchQuery(value); setSearchOpen(true) }} onSearchFocus={() => setSearchOpen(true)}
-      sidebarOpen={effectiveSidebarOpen} onToggleSidebar={toggleSidebar} onAiNews={() => setView('aiNews')} aiNewsActive={view === 'aiNews'} onAi={() => setAiOpen(true)} onPalette={() => setPaletteOpen(true)} aiConfigured={Boolean(aiConfig?.configured)}
+      sidebarOpen={effectiveSidebarOpen} onToggleSidebar={toggleSidebar} onProfile={(section) => { setProfileSection(section); setView('profile') }} onSettings={() => setView('settings')} onAiNews={() => setView('aiNews')} aiNewsActive={view === 'aiNews'} onAi={() => setAiOpen(true)} onPalette={() => setPaletteOpen(true)} aiConfigured={Boolean(aiConfig?.configured)}
     />
     <aside className="sidebar">
       <button className="quick-capture" onClick={() => openCreate('inbox')}><span>＋</span><div><strong>快速收集</strong><small>⌘ ⇧ Space</small></div></button>
@@ -239,7 +247,7 @@ function App() {
       <button className="sidebar-settings" onClick={() => setView('settings')}>⚙ 设置与数据</button>
     </aside>
     <main className="main-content">
-      <div className="page-heading"><div><p className="eyebrow">JASON OS · PERSONAL OPERATING SYSTEM</p><h1>{pageTitle}</h1></div>{!['command', 'aiNews', 'timeline', 'externalIntelligence', 'outcomes', 'finance', 'notebook'].includes(view) && <button className="button primary" onClick={() => openCreate(viewEntity(view))}>＋ 新建</button>}</div>
+      <div className="page-heading"><div><p className="eyebrow">JASON OS · PERSONAL OPERATING SYSTEM</p><h1>{pageTitle}</h1></div>{!['command', 'aiNews', 'timeline', 'externalIntelligence', 'outcomes', 'finance', 'notebook', 'profile', 'settings'].includes(view) && <button className="button primary" onClick={() => openCreate(viewEntity(view))}>＋ 新建</button>}</div>
       {view === 'command' && <CommandCenter records={records} externalItems={externalItems} onOpen={openRecord} onCreate={openCreate} onView={setView} onStartTimer={startTimer} onAi={(prompt) => { setAiDraft(prompt); setAiOpen(true) }} />}
       {view === 'today' && <TodayView records={records} running={running} onOpen={openRecord} onEdit={(record) => setEditing({ config: configFor(record.entity), record })} onComplete={completeTask} onStartTimer={startTimer} onStopTimer={stopTimer} onCreate={openCreate} />}
       {view === 'tasks' && <TasksView records={records} onOpen={openRecord} onEdit={(record) => setEditing({ config: configFor('tasks'), record })} onComplete={completeTask} onStartTimer={startTimer} onCreate={(initial) => openCreate('tasks', initial)} />}
@@ -254,6 +262,7 @@ function App() {
       {view === 'decisions' && <DecisionsView records={records} onOpen={openRecord} onCreate={() => openCreate('decisions', { date: today(), status: 'pending' })} />}
       {(view === 'events' || view === 'people') && <ContextView entity={view} records={records} onOpen={openRecord} onCreate={openCreate} />}
       {view === 'timeline' && <TimelineView records={records} onOpen={openRecord} onAiAnalyze={(question, context) => { setAiOpen(true); void sendAi(question, context) }} />}
+      {view === 'profile' && <ProfileView profile={records.find((record) => record.entity === 'profiles')} initialSection={profileSection} onSave={saveProfile} />}
       {view === 'aiNews' && <AiNewsRadarView />}
       {view === 'settings' && <SettingsView config={aiConfig} captureConfig={captureConfig} onSaveAiProvider={saveAiProvider} onSaveCaptureProvider={saveCaptureProvider} onExport={async (format) => showNotice(`已导出：${await api.export(format)}`)} onBackup={createBackup} backups={backups} onRestoreBackup={restoreBackup} onRestoreRecord={restoreRecord} />}
     </main>
@@ -267,10 +276,35 @@ function App() {
   </div>
 }
 
-const viewEntity = (view: View): Entity => ({ command: 'inbox', today: 'tasks', tasks: 'tasks', time: 'timeLogs', projects: 'projects', outcomes: 'results', finance: 'financialTransactions', externalIntelligence: 'signals', notebook: 'notes', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisions', events: 'events', people: 'people', timeline: 'events', aiNews: 'inbox', settings: 'inbox' }[view] as Entity)
+const viewEntity = (view: View): Entity => ({ command: 'inbox', today: 'tasks', tasks: 'tasks', time: 'timeLogs', projects: 'projects', outcomes: 'results', finance: 'financialTransactions', externalIntelligence: 'signals', notebook: 'notes', knowledge: 'knowledge', reviews: 'reviews', insights: 'insights', principles: 'principles', mentalModels: 'mentalModels', decisions: 'decisions', events: 'events', people: 'people', timeline: 'events', aiNews: 'inbox', settings: 'inbox', profile: 'profiles' }[view] as Entity)
 
-function GlobalHeader({ query, onQuery, onSearchFocus, sidebarOpen, onToggleSidebar, onAiNews, aiNewsActive, onAi, onPalette, aiConfigured }: { query: string; onQuery: (value: string) => void; onSearchFocus: () => void; sidebarOpen: boolean; onToggleSidebar: () => void; onAiNews: () => void; aiNewsActive: boolean; onAi: () => void; onPalette: () => void; aiConfigured: boolean }) {
-  return <header className="global-header"><div className="global-brand"><button className={`sidebar-toggle ${sidebarOpen ? 'open' : ''}`} onClick={onToggleSidebar} aria-label={sidebarOpen ? '隐藏边栏' : '展开边栏'} title={sidebarOpen ? '隐藏边栏' : '展开边栏'}><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="3" width="15" height="14" rx="2" /><path d="M7 3v14" /></svg></button><span className="brand-mark">J</span><div className="brand-copy"><strong>JASON OS</strong><small>个人操作系统</small></div></div><div className="global-search"><span>⌕</span><input value={query} onFocus={onSearchFocus} onChange={(event) => onQuery(event.target.value)} placeholder="搜索任何内容 / 询问 Jason OS..." /><kbd>⌘ K</kbd></div><div className="global-actions"><button className={`news-radar-shortcut ${aiNewsActive ? 'active' : ''}`} onClick={onAiNews}><span>✺</span>AI News Radar</button><button onClick={onAi}><span className={`ai-status ${aiConfigured ? 'connected' : ''}`} />AI 助理</button><button onClick={onPalette}><kbd>⌘ K</kbd></button></div></header>
+function GlobalHeader({ query, onQuery, onSearchFocus, sidebarOpen, onToggleSidebar, onProfile, onSettings, onAiNews, aiNewsActive, onAi, onPalette, aiConfigured }: { query: string; onQuery: (value: string) => void; onSearchFocus: () => void; sidebarOpen: boolean; onToggleSidebar: () => void; onProfile: (section: ProfileSection) => void; onSettings: () => void; onAiNews: () => void; aiNewsActive: boolean; onAi: () => void; onPalette: () => void; aiConfigured: boolean }) {
+  const [profileMenuOpen, setProfileMenuOpen] = useState(false)
+  const openProfile = (section: ProfileSection) => { setProfileMenuOpen(false); onProfile(section) }
+  return <header className="global-header"><div className="global-brand"><button className={`sidebar-toggle ${sidebarOpen ? 'open' : ''}`} onClick={onToggleSidebar} aria-label={sidebarOpen ? '隐藏边栏' : '展开边栏'} title={sidebarOpen ? '隐藏边栏' : '展开边栏'}><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="3" width="15" height="14" rx="2" /><path d="M7 3v14" /></svg></button><div className="profile-menu-anchor"><button className="profile-menu-trigger" onClick={() => setProfileMenuOpen((open) => !open)} aria-expanded={profileMenuOpen} aria-haspopup="menu" title="打开我的档案"><span className="brand-mark">J</span><span className="brand-copy"><strong>JASON OS</strong><small>个人操作系统</small></span></button>{profileMenuOpen && <div className="profile-menu" role="menu"><header><strong>我的档案</strong><small>了解和管理你的个人上下文</small></header><button onClick={() => openProfile('basic')}><span>◌</span><div><strong>基础资料</strong><small>身份、角色与工作领域</small></div></button><button onClick={() => openProfile('personal')}><span>◇</span><div><strong>个人上下文</strong><small>方向、重点与工作方式</small></div></button><button onClick={() => openProfile('ai')}><span>✦</span><div><strong>AI 上下文</strong><small>让 AI 更符合你的工作习惯</small></div></button><footer><button onClick={() => { setProfileMenuOpen(false); onSettings() }}>⚙ 设置与数据</button></footer></div>}</div></div><div className="global-search"><span>⌕</span><input value={query} onFocus={onSearchFocus} onChange={(event) => onQuery(event.target.value)} placeholder="搜索任何内容 / 询问 Jason OS..." /><kbd>⌘ K</kbd></div><div className="global-actions"><button className={`news-radar-shortcut ${aiNewsActive ? 'active' : ''}`} onClick={onAiNews}><span>✺</span>AI News Radar</button><button onClick={onAi}><span className={`ai-status ${aiConfigured ? 'connected' : ''}`} />AI 助理</button><button onClick={onPalette}><kbd>⌘ K</kbd></button></div></header>
+}
+
+type ProfileFieldProps = { label: string; field: string; value: string; onChange: (value: string) => void; placeholder?: string; multiline?: boolean }
+function ProfileField({ label, field, value, onChange, placeholder, multiline }: ProfileFieldProps) {
+  return <label className={`profile-field ${multiline ? 'multiline' : ''}`}><span>{label}</span>{multiline ? <textarea value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} aria-label={field} /> : <input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder} aria-label={field} />}</label>
+}
+function ProfileTagField({ label, field, value, onChange, placeholder }: Omit<ProfileFieldProps, 'multiline'>) {
+  const tags = value.split(/[，,]/).map((item) => item.trim()).filter(Boolean)
+  return <label className="profile-field profile-tag-field"><span>{label}</span>{tags.length > 0 && <div className="profile-tags">{tags.map((tag) => <i key={tag}>{tag}</i>)}</div>}<input value={value} onChange={(event) => onChange(event.target.value)} placeholder={placeholder || '用逗号分隔多个内容'} aria-label={field} /></label>
+}
+function ProfileView({ profile, initialSection, onSave }: { profile?: RecordData; initialSection: ProfileSection; onSave: (data: Record<string, string>) => Promise<void> }) {
+  const profileValues = (record?: RecordData) => Object.fromEntries(['name', 'nickname', 'avatar', 'occupation', 'role', 'organization', 'workDomains', 'longTermDirection', 'currentFocus', 'workStyle', 'decisionStyle', 'commonTools', 'otherContext', 'aiAssistancePreference', 'aiResponsePreference', 'aiDecisionPreference', 'aiOtherContext'].map((key) => [key, String(record?.[key] || '')])) as Record<string, string>
+  const [section, setSection] = useState<ProfileSection>(initialSection)
+  const [started, setStarted] = useState(Boolean(profile))
+  const [draft, setDraft] = useState<Record<string, string>>(() => profileValues(profile))
+  const [saving, setSaving] = useState(false)
+  useEffect(() => { setSection(initialSection) }, [initialSection])
+  useEffect(() => { setDraft(profileValues(profile)); if (profile) setStarted(true) }, [profile])
+  const update = (field: string) => (value: string) => setDraft((current) => ({ ...current, [field]: value }))
+  const save = async () => { setSaving(true); try { await onSave(draft) } finally { setSaving(false) } }
+  if (!started) return <div className="profile-page"><section className="profile-empty"><span>◌</span><div><p className="eyebrow">MY PROFILE · LOCAL ONLY</p><h2>还没有建立你的个人档案</h2><p>建立少量长期信息后，Jason OS AI 可以更准确地理解你的背景、工作方式和协作偏好。</p><button className="button primary" onClick={() => { setStarted(true); setSection('basic') }}>开始建立档案</button></div></section></div>
+  const avatar = draft.avatar.trim()
+  return <div className="profile-page"><section className="profile-hero"><div className="profile-avatar">{avatar ? <img src={avatar} alt="头像" /> : <span>{(draft.nickname || draft.name || 'J').trim().slice(0, 1)}</span>}</div><div><p className="eyebrow">MY PROFILE · LOCAL CONTEXT</p><h2>{draft.nickname || draft.name || '我的档案'}</h2><p>让 Jason OS 更了解你，并为 AI 提供长期上下文。</p></div><small>仅保存在本机；仅在问题相关时向 AI 提供精简上下文。</small></section><div className="profile-tabs" role="tablist"><button className={section === 'basic' ? 'active' : ''} onClick={() => setSection('basic')}>基础资料</button><button className={section === 'personal' ? 'active' : ''} onClick={() => setSection('personal')}>个人上下文</button><button className={section === 'ai' ? 'active' : ''} onClick={() => setSection('ai')}>AI 上下文</button></div><section className="profile-editor">{section === 'basic' && <><header><div><h3>基础资料</h3><p>只记录对工作与协作有价值的基本背景，不收集证件、联系方式等敏感信息。</p></div></header><div className="profile-grid"><ProfileField label="姓名" field="name" value={draft.name} onChange={update('name')} placeholder="例如：Jason" /><ProfileField label="昵称" field="nickname" value={draft.nickname} onChange={update('nickname')} placeholder="可选" /><ProfileField label="头像 URL" field="avatar" value={draft.avatar} onChange={update('avatar')} placeholder="可选" /><ProfileField label="职业 / 身份" field="occupation" value={draft.occupation} onChange={update('occupation')} placeholder="例如：创业者" /><ProfileField label="当前角色" field="role" value={draft.role} onChange={update('role')} placeholder="例如：CEO / 产品负责人" /><ProfileField label="公司 / 组织" field="organization" value={draft.organization} onChange={update('organization')} placeholder="可选" /><ProfileTagField label="主要工作领域" field="workDomains" value={draft.workDomains} onChange={update('workDomains')} placeholder="跨境电商，AI，产品系统" /></div></>}{section === 'personal' && <><header><div><h3>个人上下文</h3><p>记录相对稳定、能帮助 Jason OS 理解你如何工作的长期信息。</p></div></header><div className="profile-stack"><ProfileField label="长期方向" field="longTermDirection" value={draft.longTermDirection} onChange={update('longTermDirection')} multiline placeholder="例如：打造 AI 驱动的跨境电商业务体系" /><ProfileTagField label="当前重点" field="currentFocus" value={draft.currentFocus} onChange={update('currentFocus')} placeholder="Jason OS，跨境电商业务，AI Agent" /><ProfileField label="我的工作方式" field="workStyle" value={draft.workStyle} onChange={update('workStyle')} multiline placeholder="例如：偏好先建立完整架构，再执行。" /><ProfileField label="我的决策方式" field="decisionStyle" value={draft.decisionStyle} onChange={update('decisionStyle')} multiline placeholder="例如：重视反向思维、风险分析、长期价值。" /><ProfileTagField label="常用工具" field="commonTools" value={draft.commonTools} onChange={update('commonTools')} placeholder="Codex，ChatGPT，Shopify" /><ProfileField label="其他长期背景" field="otherContext" value={draft.otherContext} onChange={update('otherContext')} multiline placeholder="记录其他长期有价值的信息。" /></div></>}{section === 'ai' && <><header><div><h3>AI 上下文</h3><p>这些内容会在相关问题中帮助 AI 理解你，但 AI 修改档案仍必须经过你的确认。</p></div></header><div className="profile-stack"><ProfileField label="我希望 AI 如何帮助我" field="aiAssistancePreference" value={draft.aiAssistancePreference} onChange={update('aiAssistancePreference')} multiline placeholder="例如：从 CEO 和产品架构师角度思考，主动指出风险。" /><ProfileField label="我的回答偏好" field="aiResponsePreference" value={draft.aiResponsePreference} onChange={update('aiResponsePreference')} multiline placeholder="例如：复杂问题先给架构，再给执行方案。" /><ProfileField label="我的决策偏好" field="aiDecisionPreference" value={draft.aiDecisionPreference} onChange={update('aiDecisionPreference')} multiline placeholder="例如：关注长期价值、机会成本、风险和系统协同。" /><ProfileField label="AI 其他上下文" field="aiOtherContext" value={draft.aiOtherContext} onChange={update('aiOtherContext')} multiline placeholder="补充 AI 应长期知道的协作背景。" /></div></>}<footer><span>{profile ? '更改将立即保存到本机。' : '首次建议先填写姓名、角色、长期方向和 AI 协作方式。'}</span><button className="button primary" disabled={saving} onClick={() => void save()}>{saving ? '保存中…' : '保存档案'}</button></footer></section></div>
 }
 
 function CommandCenter({ records, externalItems, onOpen, onCreate, onView, onStartTimer, onAi }: { records: RecordData[]; externalItems: ExternalItem[]; onOpen: (record: RecordData) => void; onCreate: (entity: Entity, initial?: Partial<RecordData>) => void; onView: (view: View) => void; onStartTimer: (context?: Partial<RecordData>) => void; onAi: (prompt: string) => void }) {

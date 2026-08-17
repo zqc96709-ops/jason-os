@@ -364,3 +364,14 @@ button,input,textarea,select{border-radius:var(--radius)}
 .profile-editor > footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 19px; padding-top: 14px; border-top: 1px solid #394535; }
 .profile-editor > footer span { color: var(--muted-2); font-size: 9px; }
 @media (max-width: 760px) { .profile-menu { left: -54px; } .profile-hero { align-items: flex-start; flex-wrap: wrap; } .profile-hero > small { width: 100%; max-width: none; margin-left: 60px; text-align: left; } .profile-grid { grid-template-columns: 1fr; } .profile-tag-field { grid-column: auto; } }
+
+/* Keep sidebar quick actions compact and visually equal. */
+.sidebar .quick-capture,
+.sidebar .running-card { box-sizing: border-box; min-height: 54px; gap: 8px; padding: 8px 9px; }
+.sidebar .quick-capture > span,
+.sidebar .running-card > span:not(.pulse) { display: grid; width: 24px; height: 24px; flex: 0 0 24px; place-items: center; }
+.sidebar .quick-capture > span { border-radius: 5px; font-size: 16px; }
+.sidebar .quick-capture strong,
+.sidebar .running-card strong { font-size: 11px; }
+.sidebar .quick-capture small,
+.sidebar .running-card small { margin-top: 1px; font-size: 8px; }

@@ -18,6 +18,15 @@ export type RecordData = Record<string, unknown> & {
   relationDirection?: 'incoming' | 'outgoing'
 }
 
+export function uniqueRecordsById(records: RecordData[]): RecordData[] {
+  const seen = new Set<string>()
+  return records.filter((record) => {
+    if (seen.has(record.id)) return false
+    seen.add(record.id)
+    return true
+  })
+}
+
 export type FieldOption = string | { value: string; label: string }
 export type Field = {
   key: string
@@ -269,11 +278,16 @@ export const entities: EntityConfig[] = [
 ]
 
 export const configFor = (entity: Entity) => entities.find((item) => item.entity === entity)!
-export const titleFor = (record: Partial<RecordData>) => String(record.title || record.name || record.statement || record.content || record.context || '未命名')
+const displayScalar = (value: unknown) => typeof value === 'string' ? value.trim() : typeof value === 'number' || typeof value === 'bigint' ? String(value) : ''
+export const titleFor = (record: Partial<RecordData>) => {
+  const configuredTitle = record.entity ? entities.find((item) => item.entity === record.entity)?.titleKey : undefined
+  const candidates = [configuredTitle ? record[configuredTitle] : undefined, record.title, record.name, record.statement, record.content, record.previewTitle, record.actionType, record.toolName, record.context]
+  return candidates.map(displayScalar).find(Boolean) || '未命名'
+}
 export const descriptionFor = (record: Partial<RecordData>) => String(record.description || record.why || record.statement || record.content || record.problem || record.actual || record.actualResult || record.lesson || record.corePrinciple || record.framework || record.notes || '')
 export const statusLabel = (value: unknown) => ({ active: '进行中', planned: '计划中', paused: '已暂停', completed: '已完成', archived: '已归档', blocked: '受阻', healthy: '健康', at_risk: '有风险', inbox: '收集箱', todo: '待办', in_progress: '进行中', waiting: '等待中', cancelled: '已取消', untested: '未测试', testing: '测试中', validated: '已验证', rejected: '已否定', inconclusive: '无结论', pending: '待决定', decided: '已决定', monitoring: '观察中', partially_correct: '部分正确', wrong: '错误', unknown: '未知', unprocessed: '待处理', processed: '已处理', running: '进行中', PLANNED: '计划中', IN_PROGRESS: '进行中', ACHIEVED: '已达成', PARTIALLY_ACHIEVED: '部分达成', MISSED: '未达成', CANCELLED: '已取消', ACTIVE: '启用', INACTIVE: '停用', DRAFT: '草稿', POSTED: '已入账', VOIDED: '已作废', VERIFIED: '已核验', RECORDED: '已记录', ESTIMATED: '估算', MISSING: '数据缺失' }[String(value)] || String(value || '未设置'))
 export const priorityLabel = (value: unknown) => ({ high: '高', medium: '中', low: '低' }[String(value)] || String(value || '未设置'))
-export const isActive = (record: Partial<RecordData>) => !['completed', 'archived', 'processed', 'cancelled', 'validated', 'rejected', 'wrong', '已完成', '已归档', '已处理', 'ACHIEVED', 'CANCELLED', 'VOIDED'].includes(String(record.status || 'active'))
+export const isActive = (record: Partial<RecordData>) => !(record.entity === 'tasks' && typeof record.completedAt === 'string' && record.completedAt.trim()) && !['completed', 'archived', 'processed', 'cancelled', 'validated', 'rejected', 'wrong', '已完成', '已归档', '已处理', 'ACHIEVED', 'CANCELLED', 'VOIDED'].includes(String(record.status || 'active'))
 export const localDateKey = (value: Date | string | number = new Date()) => { const date = value instanceof Date ? value : new Date(Number(value) || value); return Number.isNaN(date.getTime()) ? '' : `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}` }
 export const recordDate = timelineOccurredAt
 export const isToday = (value: unknown) => localDateKey(String(value || '')) === localDateKey()

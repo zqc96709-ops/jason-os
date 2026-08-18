@@ -53,12 +53,14 @@ export type ChatMessage = {
   role: 'user' | 'assistant'
   content: string
   action?: AgentAction
+  actions?: AgentAction[]
 }
 
 export type AgentResponse = {
   answer: string
   context: RecordData[]
   action?: AgentAction
+  actions?: AgentAction[]
 }
 
 export type AgentActionResult = {

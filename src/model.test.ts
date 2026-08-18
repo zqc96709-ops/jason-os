@@ -1,14 +1,20 @@
 import { describe, expect, it } from 'vitest'
-import { entities, isActive, isOverdue, linkedTo, minutesToday, timeline, type RecordData } from './model'
+import { entities, isActive, isOverdue, linkedTo, minutesToday, timeline, titleFor, uniqueRecordsById, type RecordData } from './model'
 
 const record = (entity: RecordData['entity'], extra: Record<string, unknown> = {}) => ({ id: Math.random().toString(), entity, createdAt: '1', updatedAt: '2', ...extra }) as RecordData
 
 describe('Jason OS computed views', () => {
   it('keeps completed work out of active focus', () => { expect(isActive(record('tasks', { status: 'completed' }))).toBe(false); expect(isActive(record('goals', { status: 'active' }))).toBe(true) })
+  it('keeps legacy completedAt tasks out of every active view', () => { expect(isActive(record('tasks', { status: 'todo', completedAt: '2026-08-17T18:00:00+08:00' }))).toBe(false); expect(isActive(record('tasks', { status: 'todo', completedAt: '   ' }))).toBe(true) })
   it('totals only today’s recorded reality', () => { const now = new Date(); expect(minutesToday([record('timeLogs', { startAt: now.toISOString(), durationMinutes: 45 }), record('timeLogs', { startAt: '2020-01-01', durationMinutes: 99 })])).toBe(45) })
   it('uses stable occurrence dates and excludes non-timeline entities', () => { expect(timeline([record('tasks', { createdAt: '2026-08-09' }), record('knowledge'), record('decisions', { createdAt: '2026-08-10' })]).map((item) => item.entity)).toEqual(['decisions', 'tasks']) })
   it('detects overdue tasks but ignores completed tasks', () => { expect(isOverdue(record('tasks', { dueDate: '2020-01-01', status: 'todo' }))).toBe(true); expect(isOverdue(record('tasks', { dueDate: '2020-01-01', status: 'completed' }))).toBe(false) })
   it('recognizes direct and multi-value relations', () => { expect(linkedTo(record('tasks', { projectId: 'p1' }), 'p1')).toBe(true); expect(linkedTo(record('knowledge', { projectIds: ['p1', 'p2'] }), 'p2')).toBe(true) })
   it('links external evidence to decisions rather than reviews', () => { const decisionFields = entities.find((item) => item.entity === 'decisions')?.fields.map((field) => field.key); const reviewFields = entities.find((item) => item.entity === 'reviews')?.fields.map((field) => field.key); expect(decisionFields).toEqual(expect.arrayContaining(['signalIds', 'opportunityId'])); expect(reviewFields).not.toEqual(expect.arrayContaining(['signalIds', 'opportunityId'])) })
   it('reuses results as Outcome and registers Finance Core entities', () => { const result = entities.find((item) => item.entity === 'results'); expect(result?.label).toContain('Outcome'); expect(result?.fields.map((field) => field.key)).toEqual(expect.arrayContaining(['targetAmountMinor', 'actualAmountMinor', 'evidenceStatus'])); expect(entities.map((item) => item.entity)).toEqual(expect.arrayContaining(['financialAccounts', 'financialCategories', 'financialTransactions'])) })
+  it('shows a related record once even when several relation fields return it', () => { const item = record('agentActions', { id: 'action-1', relationType: 'entityId' }); expect(uniqueRecordsById([item, { ...item, relationType: 'agentActionId' }])).toEqual([item]) })
+  it('uses readable AI action metadata instead of stringifying structured context', () => {
+    expect(titleFor(record('agentActions', { context: { projectId: 'p1' }, previewTitle: '创建创作台项目', toolName: 'createProject' }))).toBe('创建创作台项目')
+    expect(titleFor(record('agentActions', { context: { projectId: 'p1' } }))).toBe('未命名')
+  })
 })

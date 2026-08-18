@@ -1,0 +1,40 @@
+/* ToAPIs personal-workbench theme: warm graphite + amber focus + teal status. */
+:root{
+  --bg:#11100e;
+  --panel:#191714;
+  --panel-2:#211e1a;
+  --panel-3:#29251f;
+  --line:#3a342c;
+  --line-strong:#5b5042;
+  --text:#f3eee5;
+  --muted:#aaa095;
+  --muted-2:#81786f;
+  --lime:#d8a94b;
+  --lime-2:#efc870;
+  --lime-soft:#3a2d18;
+  --danger:#ef8f73;
+  --danger-soft:#3b211b;
+  --warning:#d8a94b;
+  --warning-soft:#342a19;
+  --blue:#63b7ae;
+}
+.app-shell{background:radial-gradient(circle at 74% -18%,rgba(216,169,75,.15),transparent 34%),linear-gradient(145deg,#11100e,#15130f 58%,#11100e);}
+.global-header{background:rgba(17,16,14,.94)}
+.sidebar{background:#161411}
+.global-brand>span,.quick-capture>span,.ai-drawer>header>div>span{background:linear-gradient(145deg,#f0c66b,#c98f30);color:#211609;box-shadow:0 8px 24px rgba(216,169,75,.18)}
+.quick-capture{border-color:#66502b;background:linear-gradient(135deg,#352817,#211c15)}
+.quick-capture small{color:#c1ab84}
+.sidebar nav button.active{background:linear-gradient(90deg,#3a2d18,#282117);color:#fff2d4;box-shadow:inset 3px 0 var(--lime)}
+.button.primary,.settings-actions button.primary,.calendar-create-task{border-color:#e0b45d;background:linear-gradient(135deg,#e4b85d,#c99030);color:#221708;box-shadow:0 8px 22px rgba(201,144,48,.16)}
+.button.primary:hover{background:linear-gradient(135deg,#f0ca78,#d8a94b)}
+.focus-banner,.today-hero,.workspace-hero,.section-intro,.finance-hero,.external-intelligence-hero,.timeline-summary,.timeline-ai-panel,.decision-entry-box,.ceo-decision-gate{border-color:#54462f!important;background:linear-gradient(135deg,#2b2318,#191613 72%)!important}
+.dashboard-panel,.work-panel,.settings-section,.project-card,.decision-list article,.external-panel,.radar-panel{box-shadow:0 14px 40px rgba(0,0,0,.12)}
+.provider-tabs{grid-template-columns:repeat(5,minmax(0,1fr))}
+.provider-tabs>button.active,.model-catalog>button.active{border-color:#b88b37;background:#332817}
+.provider-light.connected,.ai-status.connected{background:#63b7ae;box-shadow:0 0 10px rgba(99,183,174,.55)}
+.connection-badge.connected{background:#17312e;color:#7bd2c8}
+.settings-fields input,.form-grid input,.form-grid textarea,.form-grid select,.provider-settings select{background:#12100e;border-color:#443b31}
+.provider-settings input[list]{display:block;width:100%;height:35px;margin-top:5px;padding:0 8px;border:1px solid #443b31;background:#12100e;color:var(--text);font-size:10px}
+.toast{border-color:#71552c;background:#342817;color:#ffe1a1}
+.ai-resize-handle:hover,.app-shell.ai-resizing .ai-resize-handle{background:rgba(216,169,75,.28)}
+@media(max-width:1250px){.provider-tabs{grid-template-columns:repeat(3,minmax(0,1fr))}}

@@ -236,7 +236,9 @@ pub fn migrate(connection: &rusqlite::Connection, applied_at: &str) -> Result<()
             .map_err(|e| e.to_string())?;
     }
 
-    for (slug, name, definition, decision_rule, use_cases, anti_patterns, example) in PRINCIPLE_SEEDS {
+    for (slug, name, definition, decision_rule, use_cases, anti_patterns, example) in
+        PRINCIPLE_SEEDS
+    {
         let id = format!("ceo-principle-{slug}");
         let data = json!({
             "id": id, "entity": "ceoPrinciples", "slug": slug, "name": name,

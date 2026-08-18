@@ -27,6 +27,7 @@ export const toolRegistry: ToolDefinition[] = [
   tool('getProfile', '读取当前用户的我的档案与 AI 上下文；仅在当前问题相关时使用。', 'profiles', 'READ', 'READ', false),
   tool('updateProfile', '更新当前用户的我的档案；必须先向用户展示变更预览并等待确认。', 'profiles', 'UPDATE', 'MEDIUM_WRITE', true),
   importWorkspaceDocumentToNotebook,
+  tool('createInbox', '保存用户明确提供的日常工作内容到收集箱，保留原始事实，确认后写入', 'inbox', 'CREATE', 'LOW_WRITE', true),
   tool('createMentalModel', '保存结构化思维模型到思维模型库', 'mentalModels', 'CREATE', 'LOW_WRITE', true),
   tool('getMentalModel', '读取一个思维模型', 'mentalModels', 'READ', 'READ', false),
   tool('searchMentalModels', '搜索可用于当前问题的思维模型', 'mentalModels', 'READ', 'READ', false),

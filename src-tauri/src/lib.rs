@@ -2220,6 +2220,7 @@ fn setting(connection: &Connection, key: &str) -> Result<Option<String>, String>
 
 fn provider_models(provider: &str) -> &'static [&'static str] {
     match provider {
+        "toapis" => &["gpt-5.5", "gemini-2.5-pro", "claude-sonnet-4-5"],
         "deepseek" => &["deepseek-v4-pro", "deepseek-v4-flash"],
         "minimax" => &["MiniMax-M3"],
         "volc-agent-plan" => &[
@@ -2940,6 +2941,7 @@ fn capture_link_blocking(app: AppHandle, url: String, provider: String) -> Resul
 
 fn provider_label(provider: &str) -> &'static str {
     match provider {
+        "toapis" => "ToAPIs",
         "deepseek" => "DeepSeek",
         "minimax" => "MiniMax Token Plan",
         "volc-agent-plan" => "火山引擎 Agent Plan",
@@ -2949,6 +2951,7 @@ fn provider_label(provider: &str) -> &'static str {
 
 fn provider_base_url(provider: &str) -> &'static str {
     match provider {
+        "toapis" => "https://toapis.com/v1/chat/completions",
         "deepseek" => "https://api.deepseek.com/chat/completions",
         "minimax" => "https://api.minimaxi.com/anthropic/v1/messages",
         "volc-agent-plan" => "https://ark.cn-beijing.volces.com/api/plan/v3/responses",
@@ -2958,6 +2961,7 @@ fn provider_base_url(provider: &str) -> &'static str {
 
 fn provider_key_account(provider: &str) -> &'static str {
     match provider {
+        "toapis" => "toapis-api-key",
         "deepseek" => "deepseek-api-key",
         "minimax" => "minimax-token-plan-api-key",
         "volc-agent-plan" => "volc-agent-plan-api-key",
@@ -2987,6 +2991,7 @@ fn read_secrets() -> Result<Map<String, Value>, String> {
 
 fn provider_key(provider: &str) -> Result<String, String> {
     let environment_name = match provider {
+        "toapis" => "TOAPIS_API_KEY",
         "deepseek" => "DEEPSEEK_API_KEY",
         "minimax" => "MINIMAX_TOKEN_PLAN_API_KEY",
         "volc-agent-plan" => "VOLC_AGENT_PLAN_API_KEY",
@@ -3031,7 +3036,15 @@ fn store_provider_key(provider: &str, password: &str) -> Result<(), String> {
 
 fn active_provider(connection: &Connection) -> Result<String, String> {
     let provider = setting(connection, "ai_provider")?.unwrap_or_else(|| "hackstart".to_string());
-    if ["hackstart", "deepseek", "minimax", "volc-agent-plan"].contains(&provider.as_str()) {
+    if [
+        "toapis",
+        "hackstart",
+        "deepseek",
+        "minimax",
+        "volc-agent-plan",
+    ]
+    .contains(&provider.as_str())
+    {
         Ok(provider)
     } else {
         Ok("hackstart".into())
@@ -3055,6 +3068,9 @@ fn provider_config(connection: &Connection, provider: &str) -> Result<Value, Str
         .iter()
         .map(|model| {
             let description = match *model {
+                "gpt-5.5" if provider == "toapis" => "ToAPIs 常用高质量模型",
+                "gemini-2.5-pro" => "Gemini 多模态与长上下文模型",
+                "claude-sonnet-4-5" => "Claude 高质量分析与写作模型",
                 "deepseek-v4-pro" => "高质量复杂推理",
                 "MiniMax-M3" => "最新旗舰 Agent 与推理模型",
                 "kimi-k3" => "Agent Plan Medium 当前文本模型",
@@ -3098,10 +3114,16 @@ fn open_external(url: String) -> Result<(), String> {
 fn get_ai_config(app: AppHandle) -> Result<Value, String> {
     let connection = db(&app)?;
     let provider = active_provider(&connection)?;
-    let providers = ["hackstart", "deepseek", "minimax", "volc-agent-plan"]
-        .iter()
-        .map(|item| provider_config(&connection, item))
-        .collect::<Result<Vec<_>, _>>()?;
+    let providers = [
+        "toapis",
+        "hackstart",
+        "deepseek",
+        "minimax",
+        "volc-agent-plan",
+    ]
+    .iter()
+    .map(|item| provider_config(&connection, item))
+    .collect::<Result<Vec<_>, _>>()?;
     let current = provider_config(&connection, &provider)?;
     Ok(json!({
         "provider": provider,
@@ -3139,6 +3161,10 @@ fn provider_response_text(provider: &str, response: &Value) -> String {
             .unwrap_or("")
             .to_string()
     }
+}
+
+fn should_disable_thinking(provider: &str, model: &str) -> bool {
+    provider == "deepseek" || model.starts_with("deepseek-v4")
 }
 
 fn call_provider(
@@ -3179,7 +3205,7 @@ fn call_provider(
         let mut chat_messages = vec![json!({"role": "system", "content": system})];
         chat_messages.extend(messages.iter().cloned());
         let mut payload = json!({"model": model, "temperature": 0.2, "messages": chat_messages, "max_tokens": max_tokens});
-        if provider == "deepseek" {
+        if should_disable_thinking(provider, model) {
             payload["thinking"] = json!({"type": "disabled"});
         }
         (
@@ -3234,7 +3260,15 @@ fn verify_provider(provider: &str, key: &str, model: &str) -> Result<Value, Stri
 
 #[tauri::command]
 fn test_ai_provider(app: AppHandle, provider: String, model: String) -> Result<Value, String> {
-    if !["hackstart", "deepseek", "minimax", "volc-agent-plan"].contains(&provider.as_str()) {
+    if ![
+        "toapis",
+        "hackstart",
+        "deepseek",
+        "minimax",
+        "volc-agent-plan",
+    ]
+    .contains(&provider.as_str())
+    {
         return Err("不支持的 AI 服务商".into());
     }
     let connection = db(&app)?;
@@ -3253,7 +3287,15 @@ fn configure_ai_provider(
     api_key: String,
     model: String,
 ) -> Result<Value, String> {
-    if !["hackstart", "deepseek", "minimax", "volc-agent-plan"].contains(&provider.as_str()) {
+    if ![
+        "toapis",
+        "hackstart",
+        "deepseek",
+        "minimax",
+        "volc-agent-plan",
+    ]
+    .contains(&provider.as_str())
+    {
         return Err("不支持的 AI 服务商".into());
     }
     let chosen_model = if model.trim().is_empty() {
@@ -3261,7 +3303,9 @@ fn configure_ai_provider(
     } else {
         model.trim()
     };
-    if provider != "hackstart" && !provider_models(&provider).contains(&chosen_model) {
+    if !["hackstart", "toapis"].contains(&provider.as_str())
+        && !provider_models(&provider).contains(&chosen_model)
+    {
         return Err("模型不在当前支持列表中".into());
     }
     let candidate_key = if api_key.trim().is_empty() {
@@ -3299,6 +3343,7 @@ fn configure_hackstart(app: AppHandle, api_key: String, model: String) -> Result
 
 fn agent_tool_metadata(tool: &str) -> Option<(&'static str, &'static str, bool, &'static str)> {
     match tool {
+        "createInbox" => Some(("inbox", "LOW_WRITE", true, "CREATE")),
         "createMentalModel" => Some(("mentalModels", "LOW_WRITE", true, "CREATE")),
         "updateMentalModel" => Some(("mentalModels", "MEDIUM_WRITE", true, "UPDATE")),
         "createNote" => Some(("notes", "LOW_WRITE", true, "CREATE")),
@@ -3363,16 +3408,19 @@ fn action_idempotency_key(tool: &str, input: &Value) -> String {
 
 fn required_agent_fields(entity: &str) -> &'static [&'static str] {
     match entity {
-        "mentalModels" => &["name"],
-        "notes" => &["title"],
-        "notebookCategories" | "notebookFolders" | "notebookFiles" => &["name"],
+        "mentalModels"
+        | "notebookCategories"
+        | "notebookFolders"
+        | "notebookFiles"
+        | "externalSources"
+        | "financialAccounts"
+        | "financialCategories" => &["name"],
         "knowledge" => &["title", "content"],
-        "goals" | "projects" | "tasks" | "decisions" | "reviews" => &["title"],
+        "goals" | "projects" | "tasks" | "decisions" | "reviews" | "results" | "notes"
+        | "signals" | "opportunities" | "intelligenceBriefs" => &["title"],
         "insights" | "principles" => &["statement"],
-        "externalSources" => &["name"],
-        "signals" | "opportunities" | "intelligenceBriefs" | "results" => &["title"],
+        "inbox" => &["content"],
         "financialTransactions" => &["title", "transactionType", "amountMinor"],
-        "financialAccounts" | "financialCategories" => &["name"],
         "timeLogs" => &["title"],
         _ => &[],
     }
@@ -3831,6 +3879,177 @@ fn import_workspace_document_to_notebook(app: AppHandle, input: Value) -> Result
     save_record(app, "notebookFiles".into(), data)
 }
 
+fn update_action_preview_field(action: &mut Value, label: &str, value: &str) {
+    if let Some(fields) = action
+        .get_mut("previewFields")
+        .and_then(Value::as_array_mut)
+    {
+        for field in fields {
+            if field.get("label").and_then(Value::as_str) == Some(label) {
+                if let Some(object) = field.as_object_mut() {
+                    object.insert("value".into(), Value::String(value.into()));
+                }
+            }
+        }
+    }
+}
+
+fn set_action_input_field(action: &mut Value, field: &str, value: &str) -> Result<(), String> {
+    let input = action
+        .get_mut("input")
+        .and_then(Value::as_object_mut)
+        .ok_or("Action 缺少结构化输入")?;
+    input.insert(field.into(), Value::String(value.into()));
+    let label = match field {
+        "projectId" => "项目",
+        "taskId" => "任务",
+        _ => field,
+    };
+    update_action_preview_field(action, label, value);
+    Ok(())
+}
+
+fn attach_action_bundle_dependencies(actions: &mut [Value]) {
+    let bundle_id = new_id("agentActionBundles");
+    let project_action_id = actions
+        .iter()
+        .find(|action| action.get("toolName").and_then(Value::as_str) == Some("createProject"))
+        .and_then(|action| action.get("actionId").and_then(Value::as_str))
+        .map(str::to_string);
+
+    for action in actions {
+        if let Some(object) = action.as_object_mut() {
+            object.insert("bundleId".into(), Value::String(bundle_id.clone()));
+        }
+        let needs_project =
+            action.pointer("/input/projectId").and_then(Value::as_str) == Some("{{projectId}}");
+        if needs_project {
+            if let Some(project_action_id) = project_action_id.as_deref() {
+                let object = action
+                    .as_object_mut()
+                    .expect("agent action must be an object");
+                let bindings = object.entry("bindings").or_insert_with(|| json!({}));
+                if let Some(bindings) = bindings.as_object_mut() {
+                    bindings.insert("projectId".into(), Value::String(project_action_id.into()));
+                }
+                update_action_preview_field(action, "项目", "确认项目后自动关联");
+            }
+        }
+    }
+}
+
+fn resolve_action_dependencies(action: &mut Value, candidates: &[Value]) -> Result<(), String> {
+    let bindings = action
+        .get("bindings")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    for (field, source_action_id) in bindings {
+        let source_action_id = source_action_id.as_str().ok_or("Action 依赖引用无效")?;
+        let source = candidates
+            .iter()
+            .find(|candidate| {
+                candidate.get("actionId").and_then(Value::as_str) == Some(source_action_id)
+                    || candidate.get("id").and_then(Value::as_str) == Some(source_action_id)
+            })
+            .ok_or("关联草稿不存在，请重新生成")?;
+        if source.get("status").and_then(Value::as_str) != Some("SUCCESS") {
+            let dependency = if field == "projectId" {
+                "项目"
+            } else {
+                "上游"
+            };
+            return Err(format!("请先确认{dependency}草稿"));
+        }
+        let entity_id = source
+            .pointer("/result/id")
+            .and_then(Value::as_str)
+            .ok_or("关联草稿没有返回真实记录 ID")?;
+        set_action_input_field(action, &field, entity_id)?;
+    }
+
+    if action.pointer("/input/projectId").and_then(Value::as_str) == Some("{{projectId}}") {
+        let recent_conversation = action.pointer("/context/recentConversation").cloned();
+        let action_created_at = action
+            .get("createdAt")
+            .and_then(Value::as_str)
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(i64::MAX);
+        let source = candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.get("toolName").and_then(Value::as_str) == Some("createProject")
+                    && candidate.get("status").and_then(Value::as_str) == Some("SUCCESS")
+                    && candidate.pointer("/context/recentConversation").cloned()
+                        == recent_conversation
+                    && candidate
+                        .get("createdAt")
+                        .and_then(Value::as_str)
+                        .and_then(|value| value.parse::<i64>().ok())
+                        .unwrap_or(i64::MIN)
+                        <= action_created_at
+            })
+            .max_by_key(|candidate| {
+                candidate
+                    .get("createdAt")
+                    .and_then(Value::as_str)
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .unwrap_or(i64::MIN)
+            })
+            .ok_or("请先确认项目草稿")?;
+        let project_id = source
+            .pointer("/result/id")
+            .and_then(Value::as_str)
+            .ok_or("项目草稿没有返回真实记录 ID")?;
+        set_action_input_field(action, "projectId", project_id)?;
+    }
+    Ok(())
+}
+
+fn all_agent_actions(connection: &Connection) -> Result<Vec<Value>, String> {
+    let mut statement = connection
+        .prepare(
+            "SELECT data_json FROM records WHERE entity='agentActions' AND archived_at IS NULL AND deleted_at IS NULL",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    let mut actions = Vec::new();
+    for row in rows {
+        let raw = row.map_err(|error| error.to_string())?;
+        if let Ok(action) = serde_json::from_str::<Value>(&raw) {
+            actions.push(action);
+        }
+    }
+    Ok(actions)
+}
+
+fn create_agent_actions(
+    app: AppHandle,
+    plan: &Value,
+    context: &Value,
+) -> Result<Vec<Value>, String> {
+    let plans = plan
+        .get("plans")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .cloned()
+        .unwrap_or_else(|| vec![plan.clone()]);
+    if plans.len() > 3 {
+        return Err("一次最多拆成 3 个可确认草稿".into());
+    }
+    let mut actions = plans
+        .iter()
+        .map(|item| create_agent_action(app.clone(), item, context))
+        .collect::<Result<Vec<_>, _>>()?;
+    attach_action_bundle_dependencies(&mut actions);
+    actions
+        .into_iter()
+        .map(|action| save_record(app.clone(), "agentActions".into(), action))
+        .collect()
+}
+
 fn execute_registered_tool(app: AppHandle, action: &Value) -> Result<Value, String> {
     let tool = action
         .get("toolName")
@@ -3942,6 +4161,8 @@ fn execute_ai_action(app: AppHandle, action_id: String) -> Result<Value, String>
     if action["status"] == "CANCELLED" {
         return Err("该 Action 已取消".into());
     }
+    let candidates = all_agent_actions(&connection)?;
+    resolve_action_dependencies(&mut action, &candidates)?;
     let started = Instant::now();
     {
         let object = action.as_object_mut().ok_or("Action 结构无效")?;
@@ -4399,7 +4620,7 @@ fn ask_chief_blocking(
         serde_json::to_string_pretty(&page_context).map_err(|error| error.to_string())?;
     let system = r#"你是 Jason OS 的 AI Agent，也是用户的首席助理。你既能分析，也能通过受控 Action System 操作 Jason OS。
 必须只返回一个 JSON 对象，禁止 Markdown 代码块。格式：
-{"mode":"chat|action","answer":"给用户看的简体中文","intent":"意图","toolName":"注册工具名","input":{},"missingFields":[]}
+{"mode":"chat|action","answer":"给用户看的简体中文","intent":"意图","toolName":"注册工具名","input":{},"plans":[{"intent":"CREATE","toolName":"createProject","input":{}},{"intent":"CREATE","toolName":"createTask","input":{}}],"missingFields":[]}
 规则：
 1. 用户明确要求保存、创建、更新、完成、开始或停止计时时，mode=action；不要回复“无法写入”，不要询问 Markdown/JSON/存储路径。
 2. “保存到思维模型库”“沉淀为思维模型”“把刚才的模型保存”使用 createMentalModel，intent=SAVE_MENTAL_MODEL 或 CONVERT_TO_MENTAL_MODEL。
@@ -4423,7 +4644,10 @@ fn ask_chief_blocking(
 20. 当相关本地记录中存在 type=WORKSPACE_DOCUMENT 时，其 content 是用户明确授权读取的 Jason OS docs 文档。必须直接基于该内容回答，不得声称“没有直接读取本地文件的工具”。如果存在 WORKSPACE_DOCUMENT_ERROR，则说明错误原因和允许的 docs/ 路径范围。
 21. 用户明确要求把 WORKSPACE_DOCUMENT 保存、导入或复制到 Notebook 时，使用 importWorkspaceDocumentToNotebook 生成 Action 预览，input 必须包含 name 和 sourcePath。该操作只复制 docs 文件到 Notebook Inbox，不修改源文件；必须等待用户确认后执行。
 22. type=PROFILE_CONTEXT 是用户主动保存的长期个人与 AI 上下文。只在它与当前问题直接相关时使用，不能机械复述、不能暴露无关私人资料；当前用户问题和当前页面上下文优先于 Profile。
-23. AI 默认只能读取 Profile。用户明确要求更新我的档案时，只有在存在真实 Profile ID 且字段明确时，才使用 updateProfile 生成 Action 预览；绝不能声称已更新，必须等待用户确认后才写入。"#;
+23. AI 默认只能读取 Profile。用户明确要求更新我的档案时，只有在存在真实 Profile ID 且字段明确时，才使用 updateProfile 生成 Action 预览；绝不能声称已更新，必须等待用户确认后才写入。
+24. 当用户只是陈述/复盘/记录原话且没有要求改动既有记录时，优先规划 createInbox 保存原话，不得擅自改写 tasks/results/reviews。
+25. 若一次回答包含多个彼此独立、都需要落库的意图，可以返回 actions 数组；每个计划都必须单独确认，不得把多个实体塞进一个 action。
+"#;
     let mut messages = Vec::new();
     let recent_history = history.unwrap_or_default();
     let skip = recent_history.len().saturating_sub(10);
@@ -4441,15 +4665,29 @@ fn ask_chief_blocking(
     if raw.trim().is_empty() {
         return Err(format!("{} 未返回文本内容", provider_label(&provider)));
     }
-    let parsed = extract_json_value(&raw);
+    let mut parsed = extract_json_value(&raw);
+    if parsed.is_none() {
+        let mut retry_messages = messages.clone();
+        retry_messages.push(json!({"role":"assistant","content":raw}));
+        retry_messages.push(json!({"role":"user","content":"上一条结构化输出不完整。请重新输出一个完整、严格、精简的 JSON 对象：answer 不超过 40 个汉字，plans 最多 3 项；禁止 Markdown、解释和额外文本。"}));
+        if let Ok((retry_response, _)) =
+            call_provider(&provider, &key, &model, system, &retry_messages, 4000)
+        {
+            let retry_raw = provider_response_text(&provider, &retry_response);
+            if let Some(retry_parsed) = extract_json_value(&retry_raw) {
+                parsed = Some(retry_parsed);
+            }
+        }
+    }
     let mut answer = parsed
         .as_ref()
         .and_then(|value| value.get("answer"))
         .and_then(Value::as_str)
-        .unwrap_or(&raw)
+        .unwrap_or("模型返回的结构不完整，未生成任何写入草稿。请重试。")
         .trim()
         .to_string();
     let mut action: Option<Value> = None;
+    let mut actions: Option<Vec<Value>> = None;
     if !timeline_analysis_is_read_only(&page_context)
         && parsed
             .as_ref()
@@ -4458,24 +4696,29 @@ fn ask_chief_blocking(
             == Some("action")
     {
         let plan = parsed.as_ref().unwrap();
-        match create_agent_action(app.clone(), plan, &page_context) {
-            Ok(saved_action) => {
-                let status = saved_action
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                answer = if status == "SUCCESS" {
+        match create_agent_actions(app.clone(), plan, &page_context) {
+            Ok(saved_actions) => {
+                let all_success = saved_actions
+                    .iter()
+                    .all(|item| item.get("status").and_then(Value::as_str) == Some("SUCCESS"));
+                answer = if all_success {
                     "相同操作已经执行成功，为避免重复，没有再次创建。".into()
+                } else if saved_actions.len() > 1 {
+                    format!(
+                        "我把这段内容拆成 {} 个独立草稿，每一项都需要你单独确认。",
+                        saved_actions.len()
+                    )
                 } else {
                     format!(
                         "{}。请确认后执行。",
-                        saved_action
+                        saved_actions[0]
                             .get("previewTitle")
                             .and_then(Value::as_str)
                             .unwrap_or("我已整理好本次操作")
                     )
                 };
-                action = Some(saved_action);
+                action = saved_actions.first().cloned();
+                actions = (saved_actions.len() > 1).then_some(saved_actions);
             }
             Err(error) => {
                 answer = format!("我理解了你的操作意图，但当前还不能安全执行：{error}");
@@ -4486,11 +4729,12 @@ fn ask_chief_blocking(
         "id": new_id("agentRuns"), "agentType": format!("{}-agent-planner", provider), "provider": provider,
         "input": question, "context": local_context, "pageContext": page_context, "output": answer,
         "actionId": action.as_ref().and_then(|value| value.get("actionId")).cloned(),
+        "actionIds": actions.as_ref().map(|items| items.iter().filter_map(|value| value.get("actionId")).cloned().collect::<Vec<_>>()),
         "status": "completed", "model": model, "startedAt": now(), "completedAt": now()
     });
     let saved_run = save_record(app, "agentRuns".into(), run)?;
     Ok(
-        json!({"answer": saved_run["output"], "context": saved_run["context"], "action": action, "agentRun": saved_run}),
+        json!({"answer": saved_run["output"], "context": saved_run["context"], "action": action, "actions": actions, "agentRun": saved_run}),
     )
 }
 
@@ -4618,6 +4862,18 @@ mod tests {
             Some("notebookCategories")
         );
         assert_eq!(expected_entity("notebookFolderId"), Some("notebookFolders"));
+    }
+
+    #[test]
+    fn toapis_provider_contract_is_openai_compatible() {
+        assert_eq!(provider_label("toapis"), "ToAPIs");
+        assert_eq!(
+            provider_base_url("toapis"),
+            "https://toapis.com/v1/chat/completions"
+        );
+        assert_eq!(provider_key_account("toapis"), "toapis-api-key");
+        assert!(provider_models("toapis").contains(&"gpt-5.5"));
+        assert!(provider_models("toapis").contains(&"gemini-2.5-pro"));
     }
 
     #[test]
@@ -5048,6 +5304,86 @@ mod tests {
     fn generated_ids_do_not_collide_within_the_same_millisecond() {
         assert_ne!(new_id("goals"), new_id("goals"));
     }
+    #[test]
+    fn deepseek_v4_disables_thinking_through_any_provider() {
+        assert!(should_disable_thinking("deepseek", "deepseek-v4-pro"));
+        assert!(should_disable_thinking("toapis", "deepseek-v4-flash"));
+        assert!(should_disable_thinking(
+            "volc-agent-plan",
+            "deepseek-v4-flash"
+        ));
+        assert!(!should_disable_thinking("toapis", "gpt-5.5"));
+    }
+
+    #[test]
+    fn truncated_agent_json_is_not_accepted_as_a_plan() {
+        assert!(extract_json_value("{\"mode\":\"action\",\"intent\":\"").is_none());
+        assert_eq!(
+            extract_json_value("prefix {\"mode\":\"chat\",\"answer\":\"ok\"} suffix").unwrap()
+                ["answer"],
+            "ok"
+        );
+    }
+
+    #[test]
+    fn action_bundle_links_project_dependencies_before_confirmation() {
+        let mut actions = vec![
+            json!({"actionId":"action-project","toolName":"createProject","input":{"title":"创作台批量流程"},"previewFields":[{"label":"名称","value":"创作台批量流程"}]}),
+            json!({"actionId":"action-task","toolName":"createTask","input":{"title":"核对失败重试逻辑","projectId":"{{projectId}}"},"previewFields":[{"label":"项目","value":"{{projectId}}"}]}),
+            json!({"actionId":"action-result","toolName":"createOutcome","input":{"title":"登录与基础流程完成","projectId":"{{projectId}}"},"previewFields":[{"label":"项目","value":"{{projectId}}"}]}),
+        ];
+
+        attach_action_bundle_dependencies(&mut actions);
+
+        let bundle_id = actions[0]["bundleId"].as_str().unwrap();
+        assert!(!bundle_id.is_empty());
+        assert_eq!(actions[1]["bundleId"], bundle_id);
+        assert_eq!(actions[2]["bundleId"], bundle_id);
+        assert_eq!(actions[1]["bindings"]["projectId"], "action-project");
+        assert_eq!(actions[2]["bindings"]["projectId"], "action-project");
+        assert_eq!(
+            actions[1]["previewFields"][0]["value"],
+            "确认项目后自动关联"
+        );
+    }
+
+    #[test]
+    fn action_dependency_waits_for_project_then_resolves_real_id() {
+        let mut dependent = json!({
+            "actionId":"action-task",
+            "bindings":{"projectId":"action-project"},
+            "input":{"title":"核对失败重试逻辑","projectId":"{{projectId}}"},
+            "previewFields":[{"label":"项目","value":"确认项目后自动关联"}]
+        });
+        let pending =
+            json!({"actionId":"action-project","status":"CONFIRM_REQUIRED","result":null});
+        let error = resolve_action_dependencies(&mut dependent, &[pending]).unwrap_err();
+        assert!(error.contains("请先确认项目草稿"));
+        assert_eq!(dependent["input"]["projectId"], "{{projectId}}");
+
+        let completed = json!({"actionId":"action-project","status":"SUCCESS","result":{"id":"projects-real-1","entity":"projects"}});
+        resolve_action_dependencies(&mut dependent, &[completed]).unwrap();
+        assert_eq!(dependent["input"]["projectId"], "projects-real-1");
+        assert_eq!(dependent["previewFields"][0]["value"], "projects-real-1");
+    }
+
+    #[test]
+    fn legacy_project_placeholder_resolves_only_from_matching_conversation() {
+        let conversation = json!([{"role":"user","content":"创建项目并关联任务"}]);
+        let mut dependent = json!({
+            "createdAt":"200",
+            "context":{"recentConversation":conversation.clone()},
+            "input":{"projectId":"{{projectId}}"},
+            "previewFields":[{"label":"项目","value":"{{projectId}}"}]
+        });
+        let wrong = json!({"actionId":"wrong","toolName":"createProject","status":"SUCCESS","createdAt":"150","context":{"recentConversation":[{"role":"user","content":"其他批次"}]},"result":{"id":"projects-wrong"}});
+        let matching = json!({"actionId":"right","toolName":"createProject","status":"SUCCESS","createdAt":"180","context":{"recentConversation":conversation},"result":{"id":"projects-right"}});
+
+        resolve_action_dependencies(&mut dependent, &[wrong, matching]).unwrap();
+
+        assert_eq!(dependent["input"]["projectId"], "projects-right");
+    }
+
     #[test]
     fn current_provider_model_catalog_is_explicit() {
         assert_eq!(

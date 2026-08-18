@@ -31,6 +31,13 @@ describe('Jason OS Agent registries and context', () => {
     expect(toolFor('createFinancialTransaction')).toMatchObject({ entity: 'financialTransactions', riskLevel: 'HIGH_RISK', requiresConfirmation: true })
   })
 
+  it('registers a confirmation-gated inbox capture tool that preserves the raw note', () => {
+    expect(schemaFor('inbox')?.requiredFields).toEqual(['content'])
+    expect(toolFor('createInbox')).toMatchObject({ entity: 'inbox', actionType: 'CREATE', riskLevel: 'LOW_WRITE', requiresConfirmation: true })
+    expect(toolFor('createInbox')?.inputSchema.properties).toHaveProperty('content')
+    expect(toolFor('createInbox')?.inputSchema.additionalProperties).toBe(false)
+  })
+
   it('derives Goal → Project → Task context from the current task', () => {
     const records = [record('goals', 'g1'), record('projects', 'p1', { goalId: 'g1' }), record('tasks', 't1', { projectId: 'p1', goalId: 'g1' })]
     expect(buildAgentContext({ currentRoute: 'tasks', records, selectedProjectId: null, detailId: 't1', conversation: [] })).toMatchObject({ currentEntityType: 'tasks', currentEntityId: 't1', currentTaskId: 't1', currentProjectId: 'p1', currentGoalId: 'g1' })
